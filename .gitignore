@@ -1,0 +1,29 @@
+# ---- SECRETS / CREDENTIALS — never commit (public repo) ----
+secrets.yaml
+**/secrets.yaml
+*.key
+
+# ---- Build-system re-downloadable / generated ----
+.esphome/
+**/.esphome/
+__pycache__/
+*.pyc
+.pio/
+.piolibdeps/
+
+# ---- Deploy/packaging outputs (regenerable; OTA zips carry baked creds) ----
+ota/*.zip
+*.ota.bin
+*.factory.bin
+
+# ---- Vendor (Shelly) proprietary firmware — do NOT redistribute ----
+firmware/
+*.img
+
+# ---- Reverse-engineering + emulation artifacts (not needed to build) ----
+analysis/
+qemu/
+tools/
+
+# ---- Design/RE notes (not a build input) ----
+CLAUDE.md

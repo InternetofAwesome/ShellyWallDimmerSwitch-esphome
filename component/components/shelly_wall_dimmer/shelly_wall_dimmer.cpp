@@ -1,0 +1,167 @@
+#include "shelly_wall_dimmer.h"
+
+namespace esphome::shelly_wall_dimmer {
+
+static const char *const TAG = "shelly_wall_dimmer";
+
+void ShellyWallDimmer::setup() {
+  this->engine_.set_send_handler(&ShellyWallDimmer::send_byte_trampoline_, this);
+  this->parser_.set_stray_handler(&ShellyWallDimmer::stray_byte_trampoline_, this);
+
+  // Kick off with a poll so we learn the co-processor's current state fast,
+  // rather than waiting for it to spontaneously stream something.
+  this->write_byte(::shelly_dimmer_core::CMD_POLL);
+  this->last_poll_ms_ = millis();
+}
+
+void ShellyWallDimmer::loop() {
+  while (this->available()) {
+    uint8_t c;
+    if (!this->read_byte(&c)) break;
+
+    ::shelly_dimmer_core::StatusFrame frame;
+    if (this->parser_.feed(c, frame)) {
+      this->handle_status_frame_(frame);
+    }
+  }
+
+  const uint32_t now = millis();
+
+  this->engine_.tick(now);
+
+  if (now - this->last_poll_ms_ >= this->update_interval_ms_) {
+    this->last_poll_ms_ = now;
+    this->write_byte(::shelly_dimmer_core::CMD_POLL);
+  }
+
+  this->maybe_autocommit_();
+}
+
+void ShellyWallDimmer::maybe_autocommit_() {
+  // See AUTOCOMMIT_HEALTHY_MS in the header. Runs at most once per boot; only
+  // writes flash when the currently-booted slot is still uncommitted (a fresh
+  // DFU/OTA). Normal committed boots hit the early return after one cheap read.
+  if (this->autocommit_done_)
+    return;
+  if (millis() < AUTOCOMMIT_HEALTHY_MS)
+    return;
+  this->autocommit_done_ = true;  // attempt at most once per boot
+
+  ::shelly_dimmer_core::BootState bs;
+  ::shelly_dimmer_core::BootStatePair p = bs.read();
+  if (!p.ok || p.winner < 0) {
+    ESP_LOGW(TAG, "auto-commit: cannot read boot state; skipping");
+    return;
+  }
+  if (p.copy[p.winner].committed) {
+    ESP_LOGD(TAG, "auto-commit: running slot already committed; nothing to do");
+    return;
+  }
+  ESP_LOGW(TAG, "auto-commit: healthy for %us, running slot uncommitted -> committing",
+           (unsigned) (AUTOCOMMIT_HEALTHY_MS / 1000));
+  bool ok = bs.commit();
+  ESP_LOGW(TAG, "auto-commit: %s", ok ? "OK (slot now permanent)" : "FAILED (winner intact; retries next boot)");
+}
+
+void ShellyWallDimmer::handle_status_frame_(const ::shelly_dimmer_core::StatusFrame &frame) {
+  // Let the engine reconcile: it only adopts this as new truth when it isn't
+  // mid-command (kick/ramp in flight), per BEHAVIOR.md's "manual override"
+  // rule -- this is what keeps us from fighting our own output.
+  this->engine_.notify_status(frame.brightness, frame.output_on);
+
+  // Publish telemetry only on change -- the poll repeats the same reply every
+  // ~1s and publish_state() would emit an identical state update each time
+  // (the once-per-second "'Dimmer Temperature' >> 25 °C" console spam).
+  if (this->temperature_sensor_ != nullptr &&
+      (!this->have_published_temp_ || frame.temp_c != this->last_published_temp_)) {
+    this->have_published_temp_ = true;
+    this->last_published_temp_ = frame.temp_c;
+    this->temperature_sensor_->publish_state(frame.temp_c);
+  }
+
+  if (this->last_frame_text_sensor_ != nullptr) {
+    // Reconstruct the raw wire bytes for diagnostics. b1's only documented
+    // bits are bit0 (on/off) and bit1 (unknown flag, always 0 so far); any
+    // other bits aren't preserved by StatusFrame, so this is the closest
+    // faithful reconstruction available from the decoded frame.
+    uint8_t b1 = (frame.output_on ? 0x01 : 0x00) | (frame.flag_bit1 ? 0x02 : 0x00);
+    uint8_t raw[5] = {::shelly_dimmer_core::FRAME_SOF, frame.brightness, b1, frame.temp_c,
+                       ::shelly_dimmer_core::FRAME_EOF};
+    char hex[16];
+    format_hex_to(hex, raw, sizeof(raw));
+    if (this->last_published_frame_ != hex) {
+      this->last_published_frame_ = hex;
+      this->last_frame_text_sensor_->publish_state(hex);
+    }
+  }
+
+  // Push the engine's resulting state to HA, but only on an actual change --
+  // the co-processor only streams frames when something changed anyway, but
+  // our own CMD_POLL replies can repeat the same values.
+  this->maybe_publish_light_state_(this->engine_.current_brightness(), this->engine_.is_on());
+}
+
+void ShellyWallDimmer::maybe_publish_light_state_(uint8_t brightness_pct, bool on) {
+  if (this->light_state_ == nullptr) return;
+
+  // Don't reflect intermediate kick/ramp steps: make_call().perform() below
+  // re-enters DimmerLight::write_state() (deferred to a later loop) and would
+  // retarget the in-flight ramp. Only reflect settled / device-driven state
+  // (engine idle). Once idle, request() treats the reflected value as a no-op.
+  if (this->engine_.busy()) return;
+
+  if (this->have_reported_ && brightness_pct == this->last_reported_brightness_ && on == this->last_reported_on_) {
+    return;
+  }
+  this->have_reported_ = true;
+  this->last_reported_brightness_ = brightness_pct;
+  this->last_reported_on_ = on;
+
+  auto call = this->light_state_->make_call();
+  call.set_state(on);
+  if (on) call.set_brightness(brightness_pct / 100.0f);
+  // This is a state *sync* from the hardware, not a user-initiated dim --
+  // apply it immediately, don't run it through the light's default fade.
+  call.set_transition_length(0);
+  call.perform();
+}
+
+void ShellyWallDimmer::handle_stray_byte_(uint8_t b) {
+  // Boot banner is unframed ASCII: "reset!\nshelly_apt_003 mcu ver: v1.0.4".
+  // Accumulate a line at a time; treat "reset!" as a co-processor-reset
+  // signal, and publish the line that follows it as the MCU version.
+  if (b == '\r') return;
+
+  if (b == '\n') {
+    if (this->boot_line_ == "reset!") {
+      ESP_LOGW(TAG, "Co-processor reset detected");
+      this->awaiting_version_line_ = true;
+    } else if (this->awaiting_version_line_ && !this->boot_line_.empty()) {
+      ESP_LOGI(TAG, "Co-processor boot line: %s", this->boot_line_.c_str());
+      if (this->mcu_version_text_sensor_ != nullptr) {
+        this->mcu_version_text_sensor_->publish_state(this->boot_line_);
+      }
+      this->awaiting_version_line_ = false;
+    }
+    this->boot_line_.clear();
+    return;
+  }
+
+  // Guard against unbounded growth from line noise that never sees a '\n'.
+  if (this->boot_line_.size() < 63) {
+    this->boot_line_.push_back(static_cast<char>(b));
+  }
+}
+
+void ShellyWallDimmer::dump_config() {
+  ESP_LOGCONFIG(TAG, "Shelly Wall Dimmer:");
+  const auto &params = this->engine_.params();
+  ESP_LOGCONFIG(TAG, "  Kick: %s, threshold: %u%%, level: %u%%, dwell: %ums", ONOFF(params.kick_enabled),
+                params.kick_threshold, params.kick_level, params.kick_dwell_ms);
+  ESP_LOGCONFIG(TAG, "  Ramp: step %u%% every %ums", params.ramp_step_size, params.ramp_step_ms);
+  ESP_LOGCONFIG(TAG, "  Clamp: %u-%u%%", params.min_brightness, params.max_brightness);
+  ESP_LOGCONFIG(TAG, "  Status poll interval: %ums", this->update_interval_ms_);
+  this->check_uart_settings(115200);
+}
+
+}  // namespace esphome::shelly_wall_dimmer

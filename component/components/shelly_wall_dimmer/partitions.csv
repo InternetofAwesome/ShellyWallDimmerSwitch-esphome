@@ -1,0 +1,15 @@
+# Shelly Plus Wall Dimmer flash layout, injected automatically by the
+# shelly_wall_dimmer component (see __init__.py) -- the user's YAML does NOT
+# need a `partitions:` key. This MUST match the table Shelly's bootloader has at
+# 0x8000: app_0 @0x10000 and app_1 @0x200000 are what the SH0S DFU slot mapping
+# (dfu_wrap.cpp) and the bootloader itself expect. Verified byte-identical to
+# the device's own partition-table.bin.
+# Name,   Type, SubType,  Offset,    Size,     Flags
+nvs,      data, nvs,      0x9000,    0x4000,
+otadata,  data, ota,      0xd000,    0x2000,
+app_0,    app,  ota_0,    0x10000,   0x180000,
+fs_0,     data, 0x82,     0x190000,  0x70000,
+app_1,    app,  ota_1,    0x200000,  0x180000,
+fs_1,     data, 0x82,     0x380000,  0x70000,
+aux,      0x55, 0x00,     0x3f0000,  0xc000,
+shelly,   data, 0x88,     0x3fc000,  0x4000,

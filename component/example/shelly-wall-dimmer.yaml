@@ -1,0 +1,292 @@
+# Example device config for the Shelly Plus Wall Dimmer custom firmware.
+# Validate with (do NOT `esphome compile` -- that pulls a multi-GB toolchain):
+#   source /home/sam/shelly/esphome-venv/bin/activate
+#   esphome config /home/sam/shelly/component/example/shelly-wall-dimmer.yaml
+
+substitutions:
+  name: shelly-wall-dimmer
+  friendly_name: "Wall Dimmer"
+  # Per-build version stamped into esp_app_desc.version. Stock's OTA updater
+  # gates on THIS field ("same version: %.*s" in shelly_update.cpp) -- it reads
+  # the version from the app image, NOT from manifest.json (proven: a unique
+  # manifest version was ignored). If this string doesn't change build-to-build,
+  # stock downloads the zip and silently discards it as "same version". The
+  # build wrapper (ota/build_and_stage.sh) overrides this with a fresh
+  # timestamp via `-s fw_version ...` on every compile; the default below is
+  # only a fallback so a bare `esphome config/compile` still validates.
+  fw_version: "0.0.0-dev"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  # Owning project.version makes esp_app_desc.version = ${fw_version} instead of
+  # ESPHome's own framework version ("2026.6.5", identical every build). Also
+  # shows in `esphome logs` boot banner so the RUNNING build is unambiguous.
+  project:
+    name: "sam.shelly_wall_dimmer"
+    version: "${fw_version}"
+
+# Local (not github://) source so this validates against the checked-out
+# component code, not a published release.
+external_components:
+  # Tracking master for now. When you cut a release, change ref: to the tag
+  # (e.g. ref: v1.0.0) and raise refresh so builds pin to it. refresh: 0s =
+  # always re-fetch latest master (so a local build after `git push` picks it
+  # up); for offline/local dev, swap back to {type: local, path: ../components}.
+  - source:
+      type: git
+      url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
+      ref: master
+      path: component/components
+    refresh: 0s
+    components: [shelly_wall_dimmer]
+
+esp32:
+  variant: ESP32  # ESP32-U4WDH: single-core Xtensa SKU, NOT the C3 guessed
+                  # earlier from FCC teardown photos -- see README.md.
+  framework:
+    type: esp-idf
+    # Use ESPHome's RECOMMENDED ESP-IDF (currently 5.5.x) -- no version pin.
+    # We first pinned 5.1.6 (the IDF our boot-compat playground used), but
+    # ESPHome 2026.6.5's OWN components (esp32/crash_handler.cpp) include
+    # headers that moved in newer IDF (xtensa_context.h) and fail to compile on
+    # 5.1. The esp_image format is stable 5.1->5.5, so a 5.5 app should boot
+    # under the device's stock (IDF 4.4.4) bootloader just as the 5.1 playground
+    # image did; the first (reversible) flash confirms it.
+    # NOTE: the Shelly-hardware requirements -- single-core (CONFIG_FREERTOS_UNICORE),
+    # IDF app-rollback disabled, the exact Shelly partition table, and the OTA
+    # --wrap shims -- are ALL injected automatically by the shelly_wall_dimmer
+    # component (components/shelly_wall_dimmer/__init__.py). That keeps this a
+    # plain ESPHome esp-idf config: no partitions:/sdkconfig_options:/advanced:
+    # keys needed here, and the default toolchain (platformio) is used.
+
+# UART1 to the APT32S003 dimming co-processor. PROTOCOL.md: 115200 8N1,
+# single raw command bytes out, framed '$...#' status frames in.
+uart:
+  id: dimmer_uart
+  # TX/RX confirmed from firmware disassembly (uart_set_pin trace, PROTOCOL.md):
+  # ESP32 TX = GPIO21 (carries the 0xFF poll and 0x80|B commands),
+  #           RX = GPIO22 (receives the '$ b0 b1 b2 #' frames).
+  # This is the reverse of the naive struct-order reading -- a pin-dispatch
+  # helper swaps the two bytes before uart_set_pin. If comms fail on first
+  # flash, swapping these is the first thing to try.
+  tx_pin: GPIO21
+  rx_pin: GPIO22
+  baud_rate: 115200
+
+shelly_wall_dimmer:
+  id: dimmer_coprocessor
+  update_interval: 1s  # periodic CMD_POLL so temperature/state stay fresh
+
+light:
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    # id so the v1 wall button (light.toggle) and the power-LED mirror
+    # automations below can reference this light.
+    id: dimmer_light
+    name: "Dimmer"
+    # The co-processor takes LINEAR 0-100% and applies its own dimming curve,
+    # so ESPHome's default gamma (2.8) is a double-correction that crushes low
+    # levels to 0 (5% -> ~0). Pass brightness through linearly.
+    gamma_correct: 0
+    # Our engine owns the ramp/kick; ESPHome's transition would fight it by
+    # streaming its own interpolated write_state calls. Let a set be a single
+    # request into our state machine.
+    default_transition_length: 0s
+    # v1 power-LED mirror ("match_output"): drive GPIO25 to follow the dimmer
+    # on/off state. These fire on the logical on/off edges, not per ramp step,
+    # so the LED tracks state cleanly without flickering during a kick/ramp.
+    on_turn_on:
+      - output.turn_on: power_led_output
+    on_turn_off:
+      - output.turn_off: power_led_output
+
+number:
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: kick_threshold
+    name: "Dimmer Kick Threshold"
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: kick_level
+    name: "Dimmer Kick Level"
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: kick_dwell_ms
+    name: "Dimmer Kick Dwell"
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: min_brightness
+    name: "Dimmer Min Brightness"
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: max_brightness
+    name: "Dimmer Max Brightness"
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: ramp_step_ms
+    name: "Dimmer Ramp Step Interval"
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: ramp_step_size
+    name: "Dimmer Ramp Step Size"
+  # Diagnostic raw-send: arbitrary byte value, paired with the button below.
+  # Sweeps the unused command space (0x65-0x7F / 0xE5-0xFE) from HA scripts,
+  # no reflash needed. Built-in `template` platform is the cleanest fit here
+  # (a one-off action target), not a custom entity class -- see
+  # DEV_REFERENCE.md §5.
+  - platform: template
+    id: raw_tx_byte
+    name: "Dimmer Raw TX Byte"
+    entity_category: diagnostic
+    min_value: 0
+    max_value: 255
+    step: 1
+    mode: box
+    optimistic: true
+    initial_value: 0
+
+switch:
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    name: "Dimmer Kick Enabled"
+
+sensor:
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    name: "Dimmer Temperature"
+
+text_sensor:
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: last_frame
+    name: "Dimmer Last Raw Frame"
+    id: dimmer_last_frame
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: mcu_version
+    name: "Dimmer Co-processor Version"
+
+button:
+  # Fires the value currently set on `raw_tx_byte` straight at the
+  # co-processor via ShellyWallDimmer::send_raw() -- the HA-scriptable half
+  # of the diagnostic raw-send pair.
+  - platform: template
+    name: "Dimmer Send Raw Byte"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(dimmer_coprocessor).send_raw((uint8_t) id(raw_tx_byte).state);
+  # Option B RE: dumps the raw otadata (boot-state) to the log so we can derive
+  # the record layout + checksum from real bytes. Remove before release.
+  - platform: template
+    name: "Dimmer Dump Boot State"
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(dimmer_coprocessor).dump_boot_state();'
+  # SH0S boot-state control (CLAUDE.md "SH0S BOOT-STATE RECORD").
+  # "Log" is read-only and safe to press anytime -- decodes both otadata copies
+  # (as/rs/ba/c) and marks which the bootloader would boot.
+  - platform: template
+    name: "Boot State: Log"
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(dimmer_coprocessor).log_boot_state();'
+  # DANGER -- Commit/Revert are each a ONE-SHOT FLASH WRITE to the non-winning
+  # otadata copy. Do NOT press either until the boot-state model has been
+  # confirmed on THIS live unit (dump + Log read back as expected). A wrong
+  # write to a USB-less device risks bricking it. Each writes exactly one copy
+  # and leaves the winner as a fallback, but confirm the model first.
+  - platform: template
+    name: "Boot State: Commit"
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(dimmer_coprocessor).commit_boot_state();'
+  - platform: template
+    name: "Boot State: Revert To Stock"
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(dimmer_coprocessor).revert_boot_state_to_stock();'
+
+# ---- v1 LOCAL CONTROL: front button + status LEDs -------------------------
+# GPIOs confirmed from stock app disassembly. TWO THINGS TO BENCH-VERIFY:
+#   (1) BUTTON ACTIVE LEVEL -- `inverted: true` below assumes active-low (button
+#       to GND + external board pullup, the near-certain wiring). If a tap reads
+#       backwards (light toggles on release, or state is stuck), flip `inverted`.
+#   (2) LED ASSIGNMENT + ACTIVE LEVEL -- wifi(GPIO33)/power(GPIO25) split is
+#       circumstantial, and the stock LED manager applies its own inversion, so
+#       physical polarity is NOT firmware-pinned. If an LED is on when it should
+#       be off (or the two are swapped), flip the matching `inverted:` / swap the
+#       two pin numbers. All four possibilities are cosmetic-only, never harmful.
+
+binary_sensor:
+  # Front tactile button ("key" net) on GPIO4. Preemptive path: a tap runs
+  # through our engine via light.toggle, so turn-on gets the kick.
+  - platform: gpio
+    name: "Dimmer Button"
+    pin:
+      number: GPIO4
+      # No ESP32 internal pull -- the board provides an external pull. Stock
+      # uses an any-edge ISR + debounce; we approximate with the filter below.
+      mode:
+        input: true
+      inverted: true  # BENCH-VERIFY (1): active-low starting guess
+    filters:
+      - delayed_on_off: 30ms  # debounce
+    on_press:
+      - light.toggle: dimmer_light
+
+output:
+  # Power LED on GPIO25, driven by the light's on_turn_on/off above.
+  - platform: gpio
+    id: power_led_output
+    pin:
+      number: GPIO25
+      inverted: false  # BENCH-VERIFY (2): active level (flip if LED is inverted)
+
+# wifi/sys LED on GPIO33 -> ESPHome status_led (shows AP/connecting/warning).
+status_led:
+  pin:
+    number: GPIO33
+    inverted: false  # BENCH-VERIFY (2): active level (flip if LED is inverted)
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot if the configured WiFi can't be joined -- so a bad-WiFi
+  # image is ALWAYS reachable (the gap that stranded the first flash).
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret ap_password
+
+# WiFi-setup portal served on the fallback AP.
+captive_portal:
+
+api:
+  encryption:
+    key: !secret encryption_key
+
+# Native ESPHome OTA is SH0S-SAFE here: the shelly_wall_dimmer component adds a
+# linker --wrap on esp_ota_set_boot_partition (dfu_wrap.cpp), so an OTA writes
+# the Shelly SH0S boot record (boot new slot, ba-countdown auto-revert to the
+# current slot on failure) instead of ota_select. IDF app-rollback is disabled
+# above so no other otadata write happens. A healthy new image self-commits
+# (auto-commit-on-healthy in the component). Do NOT re-enable IDF rollback.
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Co-processor UART lives on UART1 (dimmer_uart above); the logger stays on
+# the default UART0/USB-serial console, so it never contends with the
+# protocol link.
+logger:
+  # DEBUG shows everything printed at boot (dump_config is an internal CONFIG
+  # level below DEBUG; INFO would wrongly hide it) while our component adds no
+  # periodic DEBUG logging -- only an on-change write_state trace.
+  #
+  # NOTE: the once-per-second "'Dimmer Temperature' >> 25 °C" / "'Dimmer Last
+  # Raw Frame' >> ..." lines are NOT logger output -- they are ENTITY STATE
+  # updates ([S] in the log view), sent on every publish_state() call
+  # regardless of log level. They are silenced at the source in
+  # handle_status_frame_() (publish telemetry only on change), not here.
+  level: DEBUG
