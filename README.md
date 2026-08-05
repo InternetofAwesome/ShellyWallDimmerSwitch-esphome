@@ -23,21 +23,20 @@ external_components:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
       ref: master
-      path: component/components
     refresh: 0s
     components: [shelly_wall_dimmer]
 ```
 
-See [`component/example/shelly-wall-dimmer.yaml`](component/example/shelly-wall-dimmer.yaml)
+See [`example/shelly-wall-dimmer.yaml`](example/shelly-wall-dimmer.yaml)
 for a full example (light + kick/ramp/clamp number entities, temperature sensor,
-local button/LED control). Copy `component/example/secrets.yaml.example` to
+local button/LED control). Copy `example/secrets.yaml.example` to
 `secrets.yaml` and fill in your Wi-Fi/API/OTA values first.
 
 ## Layout
 
-- `component/components/shelly_wall_dimmer/` — the ESPHome external component.
-- `component/example/` — example device config + `secrets.yaml.example`.
+- `components/shelly_wall_dimmer/` — the ESPHome external component.
+- `example/` — example device config + `secrets.yaml.example`.
 
 ## License
 
-Not yet chosen — until a `LICENSE` file is added, all rights reserved.
+GNU General Public License v3.0 — see [LICENSE](LICENSE).

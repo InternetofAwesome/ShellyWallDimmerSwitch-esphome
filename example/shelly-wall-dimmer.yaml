@@ -37,7 +37,6 @@ external_components:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
       ref: master
-      path: component/components
     refresh: 0s
     components: [shelly_wall_dimmer]
 
