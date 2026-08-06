@@ -83,7 +83,7 @@ void ShellyWallDimmer::handle_status_frame_(const ::shelly_dimmer_core::StatusFr
   // Let the engine reconcile: it only adopts this as new truth when it isn't
   // mid-command (kick/ramp in flight), per BEHAVIOR.md's "manual override"
   // rule -- this is what keeps us from fighting our own output.
-  this->engine_.notify_status(frame.brightness, frame.output_on);
+  this->engine_.notify_status(frame.brightness, frame.output_on, millis());
 
   // Publish telemetry only on change -- the poll repeats the same reply every
   // ~1s and publish_state() would emit an identical state update each time
@@ -175,10 +175,12 @@ void ShellyWallDimmer::handle_stray_byte_(uint8_t b) {
 void ShellyWallDimmer::dump_config() {
   ESP_LOGCONFIG(TAG, "Shelly Wall Dimmer:");
   const auto &params = this->engine_.params();
-  ESP_LOGCONFIG(TAG, "  Kick: %s, threshold: %u%%, level: %u%%, dwell: %ums", ONOFF(params.kick_enabled),
-                params.kick_threshold, params.kick_level, (unsigned) params.kick_dwell_ms);
-  ESP_LOGCONFIG(TAG, "  Ramp: step %u%% every %ums", params.ramp_step_size, (unsigned) params.ramp_step_ms);
-  ESP_LOGCONFIG(TAG, "  Clamp: %u-%u%%", params.min_brightness, params.max_brightness);
+  ESP_LOGCONFIG(TAG, "  Kick: %s, level: %u%%, dwell: %ums", ONOFF(params.kick_enabled),
+                params.kick_level, (unsigned) params.kick_dwell_ms);
+  ESP_LOGCONFIG(TAG, "  Range map: %u-%u%%", params.min_brightness, params.max_brightness);
+  ESP_LOGCONFIG(TAG, "  Ramp: %u%%/s (on-change:%s on/off:%s limit-correct:%s)",
+                (unsigned) params.ramp_rate, ONOFF(params.ramp_on_change),
+                ONOFF(params.ramp_on_off), ONOFF(params.limit_correct));
   ESP_LOGCONFIG(TAG, "  Status poll interval: %ums", (unsigned) this->update_interval_ms_);
   ESP_LOGCONFIG(TAG, "  Boot-state writes (commit/revert/DFU): %s",
                 this->boot_state_layout_ok_ ? "ENABLED (layout guard OK)"

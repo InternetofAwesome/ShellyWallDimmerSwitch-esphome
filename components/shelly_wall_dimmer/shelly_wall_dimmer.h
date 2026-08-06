@@ -27,13 +27,19 @@ namespace esphome::shelly_wall_dimmer {
 
 // ---- one C++ member field per live-tunable DimmerParams field -------------
 enum class DimmerNumberType {
-  KICK_THRESHOLD,
   KICK_LEVEL,
   KICK_DWELL_MS,
   MIN_BRIGHTNESS,
   MAX_BRIGHTNESS,
-  RAMP_STEP_MS,
-  RAMP_STEP_SIZE,
+  RAMP_RATE,
+};
+
+// One typed boolean switch per engine toggle (kick + the three ramp gates).
+enum class DimmerSwitchType {
+  KICK_ENABLED,
+  RAMP_ON_CHANGE,
+  RAMP_ON_OFF,
+  LIMIT_CORRECT,
 };
 
 class ShellyWallDimmer : public Component, public uart::UARTDevice {
@@ -229,9 +235,6 @@ class DimmerNumber : public number::Number, public Component, public Parented<Sh
   void control(float value) override {
     auto &params = this->parent_->get_engine().params();
     switch (this->type_) {
-      case DimmerNumberType::KICK_THRESHOLD:
-        params.kick_threshold = static_cast<uint8_t>(value);
-        break;
       case DimmerNumberType::KICK_LEVEL:
         params.kick_level = static_cast<uint8_t>(value);
         break;
@@ -244,22 +247,21 @@ class DimmerNumber : public number::Number, public Component, public Parented<Sh
       case DimmerNumberType::MAX_BRIGHTNESS:
         params.max_brightness = static_cast<uint8_t>(value);
         break;
-      case DimmerNumberType::RAMP_STEP_MS:
-        params.ramp_step_ms = static_cast<uint32_t>(value);
-        break;
-      case DimmerNumberType::RAMP_STEP_SIZE:
-        params.ramp_step_size = static_cast<uint8_t>(value);
+      case DimmerNumberType::RAMP_RATE:
+        params.ramp_rate = static_cast<uint16_t>(value);
         break;
     }
     this->publish_state(value);
   }
 
-  DimmerNumberType type_{DimmerNumberType::KICK_THRESHOLD};
+  DimmerNumberType type_{DimmerNumberType::KICK_LEVEL};
 };
 
-// ---- kick_enabled switch ---------------------------------------------------
-class DimmerKickSwitch : public switch_::Switch, public Component, public Parented<ShellyWallDimmer> {
+// ---- engine toggle switches (kick + the three ramp gates) ------------------
+class DimmerSwitch : public switch_::Switch, public Component, public Parented<ShellyWallDimmer> {
  public:
+  void set_type(DimmerSwitchType type) { this->type_ = type; }
+
   void setup() override {
     // Prime the engine from the switch's boot-time (restored or YAML
     // default) state, mirroring DimmerNumber::setup().
@@ -268,9 +270,25 @@ class DimmerKickSwitch : public switch_::Switch, public Component, public Parent
 
  protected:
   void write_state(bool state) override {
-    this->parent_->get_engine().params().kick_enabled = state;
+    auto &params = this->parent_->get_engine().params();
+    switch (this->type_) {
+      case DimmerSwitchType::KICK_ENABLED:
+        params.kick_enabled = state;
+        break;
+      case DimmerSwitchType::RAMP_ON_CHANGE:
+        params.ramp_on_change = state;
+        break;
+      case DimmerSwitchType::RAMP_ON_OFF:
+        params.ramp_on_off = state;
+        break;
+      case DimmerSwitchType::LIMIT_CORRECT:
+        params.limit_correct = state;
+        break;
+    }
     this->publish_state(state);
   }
+
+  DimmerSwitchType type_{DimmerSwitchType::KICK_ENABLED};
 };
 
 }  // namespace esphome::shelly_wall_dimmer

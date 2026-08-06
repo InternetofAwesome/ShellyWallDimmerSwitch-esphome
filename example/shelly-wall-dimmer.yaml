@@ -113,10 +113,8 @@ light:
       - output.turn_off: power_led_output
 
 number:
-  - platform: shelly_wall_dimmer
-    shelly_wall_dimmer_id: dimmer_coprocessor
-    type: kick_threshold
-    name: "Kick Threshold"
+  # kick_level is the single pivot: the lowest % the bulb reliably lights at.
+  # Turn-on snaps here, then dwells+ramps down (below) or ramps up (above).
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: kick_level
@@ -133,14 +131,12 @@ number:
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: max_brightness
     name: "Max Brightness"
+  # Single shared ramp rate in %/second, used by every ramp (on-change, on/off
+  # fade, and limit correction). The firmware quantizes it to a step cadence.
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
-    type: ramp_step_ms
-    name: "Ramp Interval"
-  - platform: shelly_wall_dimmer
-    shelly_wall_dimmer_id: dimmer_coprocessor
-    type: ramp_step_size
-    name: "Ramp Step"
+    type: ramp_rate
+    name: "Ramp Rate"
   # --- DEVELOPER TOOL (disabled by default) ---------------------------------
   # Diagnostic raw-send: arbitrary byte value, paired with "Dimmer Send Raw
   # Byte" in the (also-disabled) button block below. Sweeps the unused command
@@ -160,7 +156,24 @@ number:
 switch:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
+    type: kick_enabled
     name: "Kick Enabled"
+  # Ramp on a brightness change while already on (default on).
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: ramp_on_change
+    name: "Ramp On Change"
+  # Fade in on turn-on / fade out on turn-off, instead of jumping (default off).
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: ramp_on_off
+    name: "Fade In/Out"
+  # If the physical touch panel drives brightness outside the min/max window,
+  # ramp back to the nearest limit (default off; see the touch caveat in README).
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: limit_correct
+    name: "Limit Correct"
 
 sensor:
   - platform: shelly_wall_dimmer

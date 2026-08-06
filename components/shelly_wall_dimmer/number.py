@@ -11,14 +11,14 @@ DimmerNumber = shelly_wall_dimmer_ns.class_(
 DimmerNumberType = shelly_wall_dimmer_ns.enum("DimmerNumberType", is_class=True)
 
 # type -> (enum value, min, max, step, default)   -- ranges/defaults per BEHAVIOR.md
+# ramp_rate is a single shared rate in percent/second (min 1 so it can never be
+# zero; 150 == the old 3%/20ms cadence). The engine quantizes it to a step/interval.
 TYPES = {
-    "kick_threshold": (DimmerNumberType.KICK_THRESHOLD, 0, 100, 1, 20),
-    "kick_level": (DimmerNumberType.KICK_LEVEL, 0, 100, 1, 100),
+    "kick_level": (DimmerNumberType.KICK_LEVEL, 0, 100, 1, 20),
     "kick_dwell_ms": (DimmerNumberType.KICK_DWELL_MS, 0, 2000, 10, 150),
     "min_brightness": (DimmerNumberType.MIN_BRIGHTNESS, 0, 100, 1, 1),
     "max_brightness": (DimmerNumberType.MAX_BRIGHTNESS, 0, 100, 1, 100),
-    "ramp_step_ms": (DimmerNumberType.RAMP_STEP_MS, 0, 200, 5, 20),
-    "ramp_step_size": (DimmerNumberType.RAMP_STEP_SIZE, 1, 100, 1, 3),
+    "ramp_rate": (DimmerNumberType.RAMP_RATE, 1, 1000, 1, 150),
 }
 
 CONFIG_SCHEMA = number.number_schema(

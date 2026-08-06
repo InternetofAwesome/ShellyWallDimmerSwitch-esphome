@@ -191,13 +191,11 @@ defaults:
 
 | `type` | Range (step) | Default | Meaning |
 |---|---|---|---|
-| `kick_threshold` | 0–100 % (1) | 20 | Only apply the kick when turning on to a target **at or below** this level. |
-| `kick_level` | 0–100 % (1) | 100 | Brightness to jump to during the kick. |
-| `kick_dwell_ms` | 0–2000 ms (10) | 150 | How long to hold `kick_level` before dropping to the target. |
+| `kick_level` | 0–100 % (1) | 20 | The strike level **and** the pivot — every turn-on snaps here first (see kick below). Set to the lowest % your bulb reliably lights at. |
+| `kick_dwell_ms` | 0–2000 ms (10) | 150 | How long to hold `kick_level` before ramping **down** — applies only when the target is below `kick_level`. |
 | `min_brightness` | 0–100 % (1) | 1 | Low end of the usable brightness window (see range mapping below). |
 | `max_brightness` | 0–100 % (1) | 100 | High end of the usable brightness window. |
-| `ramp_step_ms` | 0–200 ms (5) | 20 | Interval between brightness steps while ramping. |
-| `ramp_step_size` | 1–100 % (1) | 3 | Brightness change per ramp step. |
+| `ramp_rate` | 1–1000 %/s (1) | 150 | One shared ramp speed, in **percent per second**, used by every ramp (see ramps below). |
 
 **Range mapping (min/max).** `min_brightness`/`max_brightness` don't clamp — they
 **stretch** the 0–100 % command scale across a narrower physical window. Setting
@@ -205,8 +203,8 @@ the light to 0 % drives `min_brightness`, 100 % drives `max_brightness`, and
 everything in between is linear. With `min=20, max=80`: Home Assistant 0 % → 20 %
 real, 50 % → 50 %, 100 % → 80 %. Device reports are inverse-mapped, so HA still
 shows a clean 0–100 %. Defaults (`1`/`100`) are effectively a no-op — narrow the
-window to use it. `kick_threshold`/`kick_level` are in **real** device terms, so
-the kick still keys off the actual level the LED sees.
+window to use it. `kick_level` is in **real** device terms, so the kick keys off
+the actual level the LED sees.
 
 > ⚠️ **Caveat — physical touch dimming is not range-mapped.** The mapping is
 > applied only on the *command* path (Home Assistant, automations, and the front
@@ -217,11 +215,33 @@ the kick still keys off the actual level the LED sees.
 > This firmware can't intercept it; it can only re-scale it for display, so Home
 > Assistant stays consistent. If you rely on `min` to keep a fussy LED from
 > dropping out, know that a physical swipe can still take it under that floor.
+> The `limit_correct` switch (below) is the opt-in enforcement — but note it can
+> only pull the level back *after* the touch change, not pre-empt it.
+
+**Ramps.** A single `ramp_rate` (percent/second) drives every ramp; the firmware
+converts it to a step cadence for you, quantized to a 10 ms floor (~one mains
+half-cycle — the TRIAC only acts once per 8.33 ms, so finer buys nothing). It
+never dithers: a ramp holds one fixed step and interval, and a leftover partial
+step just lands exactly on the setpoint. `ramp_rate` can't be set to zero. Which
+transitions actually ramp is controlled by the three switches below; `kick_dwell`
+and the kick's own descent to target also use `ramp_rate`.
 
 ### `switch:` — `platform: shelly_wall_dimmer`
 
-A single `config`-category switch, **Kick Enabled**, default **on**. Turns the
-kick behavior on/off at runtime.
+All `config`-category, selected by `type:`:
+
+| `type` | Default | Description |
+|---|---|---|
+| `kick_enabled` | **on** | Enable the kick (the strike pulse on a dim turn-on). |
+| `ramp_on_change` | **on** | Ramp (rather than jump) on a brightness change while already on. |
+| `ramp_on_off` | off | Fade in on turn-on and fade out on turn-off, instead of jumping. |
+| `limit_correct` | off | If the **physical touch panel** drives brightness outside `[min,max]`, ramp back to the nearest limit. Best-effort — see the touch caveat above; it reacts after the fact and can't pre-empt a physical swipe. |
+
+With `kick_enabled` on, **every** turn-on from off snaps to `kick_level` first
+(the strike — below it the bulb is dark anyway), then reaches the target: it holds
+`kick_dwell` and ramps **down** if the target is below `kick_level`, or ramps
+**up** with no dwell if above. With `kick_enabled` off, a turn-on either jumps
+straight to the target or, with `ramp_on_off`, fades in from 0.
 
 ### `sensor:` — `platform: shelly_wall_dimmer`
 
