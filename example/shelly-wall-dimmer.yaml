@@ -41,8 +41,13 @@ external_components:
     components: [shelly_wall_dimmer]
 
 esp32:
-  variant: ESP32  # ESP32-U4WDH: single-core Xtensa SKU, NOT the C3 guessed
-                  # earlier from FCC teardown photos -- see README.md.
+  # Generic classic-ESP32 dev board (4 MB flash). `esp32dev` is the recognized
+  # PlatformIO board for a plain ESP32 -- prefer it over the bare `esp32` option
+  # (which ESPHome flags as an unknown board). The device is a classic dual-core
+  # ESP32 rev3.1 (an earlier note here claimed a single-core U4WDH -- wrong; the
+  # chip reports 2 cores). We force single-core operation via
+  # CONFIG_FREERTOS_UNICORE in the component to match Shelly's stock build.
+  board: esp32dev
   framework:
     type: esp-idf
     # Use ESPHome's RECOMMENDED ESP-IDF (currently 5.5.x) -- no version pin.
