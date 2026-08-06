@@ -76,7 +76,7 @@ external_components:
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
       ref: master
     refresh: 0s
-    components: [shelly_wall_dimmer]
+    components: [shelly_wall_dimmer, status_led_pwm]
 ```
 
 Start from [`example/shelly-wall-dimmer.yaml`](example/shelly-wall-dimmer.yaml) —
@@ -264,13 +264,18 @@ no custom options, but note the GPIOs and the two things to bench-verify:
 - `binary_sensor` (**GPIO4**) — front tactile button; a tap runs `light.toggle`
   so turn-on gets the kick. Assumes active-low (`inverted: true`); flip if a tap
   reads backwards.
-- `output` (**GPIO25**) — power LED, driven to follow on/off.
-- `status_led` (**GPIO33**) — Wi-Fi/status LED.
+- **Power LED** (**GPIO25**) and **WiFi LED** (**GPIO33**) — each driven by a
+  ~1000 Hz `ledc` PWM channel, so both get an HA brightness slider; that
+  brightness is the level used whenever the LED is on. The **Power LED** is a
+  monochromatic light that mirrors the dimmer's on/off (its slider is the "on"
+  level). The **WiFi LED** uses the `status_led_pwm` component (below) — a
+  dimmable light that *also* keeps the automatic Wi-Fi status blink
+  (AP/connecting/warning/error), so you don't lose the connection indicator.
 - `uart` — **TX GPIO21 / RX GPIO22** to the co-processor. If comms fail on the
   first flash, swapping these is the first thing to try.
 
-LED polarity and the button's active level are cosmetic and not firmware-pinned;
-the example flags each with a `BENCH-VERIFY` comment.
+> LED polarity and the button's active level are cosmetic and not firmware-pinned;
+> the example flags each with a `BENCH-VERIFY` comment.
 
 ### Developer / recovery tools (shipped **off** by default)
 
@@ -320,6 +325,8 @@ corrupting the boot record.
 ## Layout
 
 - `components/shelly_wall_dimmer/` — the ESPHome external component.
+- `components/status_led_pwm/` — a small light platform: a dimmable (PWM) status
+  LED that keeps ESPHome's status-blink behavior (used for the WiFi LED).
 - `example/` — example device config + `secrets.yaml.example`.
 
 ## License

@@ -38,7 +38,7 @@ external_components:
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
       ref: master
     refresh: 0s
-    components: [shelly_wall_dimmer]
+    components: [shelly_wall_dimmer, status_led_pwm]
 
 esp32:
   # Generic classic-ESP32 dev board (4 MB flash). `esp32dev` is the recognized
@@ -108,9 +108,38 @@ light:
     # on/off state. These fire on the logical on/off edges, not per ramp step,
     # so the LED tracks state cleanly without flickering during a kick/ramp.
     on_turn_on:
-      - output.turn_on: power_led_output
+      - light.turn_on: power_led
     on_turn_off:
-      - output.turn_off: power_led_output
+      - light.turn_off: power_led
+
+  # ---- status LEDs as dimmable ~1000 Hz PWM indicators --------------------
+  # Both physical LEDs are driven by ledc PWM channels (see `output:` below) and
+  # exposed as monochromatic lights, so each gets an HA brightness slider. That
+  # brightness is the level used whenever the LED is on.
+  #
+  # Power LED: mirrors the dimmer's on/off (the automations above). light.turn_on
+  # restores this light's brightness, so the slider IS the "on" level. Brightness
+  # persists across reboots; the light starts off and the mirror drives on/off.
+  - platform: monochromatic
+    id: power_led
+    name: "Power LED"
+    output: power_led_pwm
+    entity_category: config
+    gamma_correct: 0          # slider % maps straight to PWM duty
+    default_transition_length: 0s
+    restore_mode: RESTORE_AND_OFF
+  # WiFi/sys LED: dimmable AND keeps the status indication. `status_led_pwm` (our
+  # component) hooks the same app-state mechanism as ESPHome's status_led -- it
+  # blinks on AP/connecting/warning/error -- but drives the PWM channel, so its
+  # steady "on" level is this light's configurable brightness. Best of both.
+  - platform: status_led_pwm
+    id: wifi_led
+    name: "WiFi LED"
+    output: wifi_led_pwm
+    entity_category: config
+    gamma_correct: 0
+    default_transition_length: 0s
+    restore_mode: RESTORE_DEFAULT_ON
 
 number:
   # kick_level is the single pivot: the lowest % the bulb reliably lights at.
@@ -167,7 +196,7 @@ switch:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: ramp_on_off
-    name: "Fade In/Out"
+    name: "Fade In-Out"
   # If the physical touch panel drives brightness outside the min/max window,
   # ramp back to the nearest limit (default off; see the touch caveat in README).
   - platform: shelly_wall_dimmer
@@ -266,18 +295,17 @@ binary_sensor:
       - light.toggle: dimmer_light
 
 output:
-  # Power LED on GPIO25, driven by the light's on_turn_on/off above.
-  - platform: gpio
-    id: power_led_output
-    pin:
-      number: GPIO25
-      inverted: false  # BENCH-VERIFY (2): active level (flip if LED is inverted)
-
-# wifi/sys LED on GPIO33 -> ESPHome status_led (shows AP/connecting/warning).
-status_led:
-  pin:
-    number: GPIO33
-    inverted: false  # BENCH-VERIFY (2): active level (flip if LED is inverted)
+  # Status-LED PWM channels at ~1000 Hz (ledc). Brightness + on/off both come
+  # from the monochromatic lights above. If an LED reads inverted (on when it
+  # should be off), invert its pin, e.g. `pin: {number: GPIO25, inverted: true}`.
+  - platform: ledc
+    id: power_led_pwm
+    pin: GPIO25          # BENCH-VERIFY (2): active level / pin assignment
+    frequency: 1000Hz
+  - platform: ledc
+    id: wifi_led_pwm
+    pin: GPIO33          # BENCH-VERIFY (2): active level / pin assignment
+    frequency: 1000Hz
 
 wifi:
   ssid: !secret wifi_ssid
