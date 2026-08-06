@@ -114,8 +114,8 @@ class BootState {
     for (int i = 0; i < 2; i++) {
       const auto &v = p.copy[i];
       ESP_LOGI(TAG, "copy%d @0x%04x: %s seq=%u as=%u rs=%u ba=%u c=%u (ctrl0=0x%02x ctrl1=0x%02x)%s",
-               i, i == 0 ? SHOS_COPY0 : SHOS_COPY1,
-               v.valid ? "VALID" : "invalid", v.seq, v.as, v.rs, v.ba,
+               i, (unsigned) (i == 0 ? SHOS_COPY0 : SHOS_COPY1),
+               v.valid ? "VALID" : "invalid", (unsigned) v.seq, v.as, v.rs, v.ba,
                v.committed ? 1 : 0, v.ctrl0, v.ctrl1,
                i == p.winner ? "  <-- boots" : "");
     }
@@ -289,7 +289,7 @@ class BootState {
     seal_crcs_(buf);
 
     ESP_LOGI(TAG, "writing copy%d @0x%04x: seq %u->%u ctrl0 0x%02x->0x%02x ctrl1 0x%02x->0x%02x",
-             target, tgt_off, w.seq, new_seq, w.ctrl0, buf[SHOS_OFF_CTRL0],
+             target, (unsigned) tgt_off, (unsigned) w.seq, (unsigned) new_seq, w.ctrl0, buf[SHOS_OFF_CTRL0],
              w.ctrl1, buf[SHOS_OFF_CTRL1]);
 
     // Erase-then-write the target sector only. If power fails mid-write the
@@ -318,7 +318,7 @@ class BootState {
       ESP_LOGW(TAG,
                "verify FAILED (valid=%d crc_ok=%d seq=%u want=%u ctrl0=0x%02x/want0x%02x "
                "ctrl1=0x%02x/want0x%02x) -- winner copy untouched, safe",
-               vv.valid, crc_ok, vv.seq, new_seq, vv.ctrl0, buf[SHOS_OFF_CTRL0],
+               vv.valid, crc_ok, (unsigned) vv.seq, (unsigned) new_seq, vv.ctrl0, buf[SHOS_OFF_CTRL0],
                vv.ctrl1, buf[SHOS_OFF_CTRL1]);
       return false;
     }

@@ -83,7 +83,7 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
       if (esp_partition_read(ota, bs, buf, sizeof(buf)) != ESP_OK) {
         ESP_LOGW("shelly_wall_dimmer", "otadata read failed"); return;
       }
-      ESP_LOGI("shelly_wall_dimmer", "=== BS @ otadata+0x%04x ===", bs);
+      ESP_LOGI("shelly_wall_dimmer", "=== BS @ otadata+0x%04x ===", (unsigned) bs);
       for (uint32_t off = 0; off < sizeof(buf); off += 16) {
         char line[40];
         for (int i = 0; i < 16; i++) snprintf(line + i * 2, 3, "%02x", buf[off + i]);

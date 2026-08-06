@@ -157,10 +157,10 @@ void ShellyWallDimmer::dump_config() {
   ESP_LOGCONFIG(TAG, "Shelly Wall Dimmer:");
   const auto &params = this->engine_.params();
   ESP_LOGCONFIG(TAG, "  Kick: %s, threshold: %u%%, level: %u%%, dwell: %ums", ONOFF(params.kick_enabled),
-                params.kick_threshold, params.kick_level, params.kick_dwell_ms);
-  ESP_LOGCONFIG(TAG, "  Ramp: step %u%% every %ums", params.ramp_step_size, params.ramp_step_ms);
+                params.kick_threshold, params.kick_level, (unsigned) params.kick_dwell_ms);
+  ESP_LOGCONFIG(TAG, "  Ramp: step %u%% every %ums", params.ramp_step_size, (unsigned) params.ramp_step_ms);
   ESP_LOGCONFIG(TAG, "  Clamp: %u-%u%%", params.min_brightness, params.max_brightness);
-  ESP_LOGCONFIG(TAG, "  Status poll interval: %ums", this->update_interval_ms_);
+  ESP_LOGCONFIG(TAG, "  Status poll interval: %ums", (unsigned) this->update_interval_ms_);
   this->check_uart_settings(115200);
 }
 
