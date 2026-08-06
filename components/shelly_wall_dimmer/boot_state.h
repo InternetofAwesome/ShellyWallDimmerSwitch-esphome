@@ -61,6 +61,21 @@ static constexpr uint32_t SHOS_OFF_CRC_BODY = 0x1fc;  // u32 LE crc32 of rec[0..
 // QEMU-validated at 3: image gets 3 boots to prove healthy + call commit().
 static constexpr uint8_t SHOS_DFU_BOOT_ATTEMPTS = 3;
 
+// ---- proactive partition-layout guard --------------------------------------
+// Every SH0S mutation is written against a HARD-CODED flash geometry: otadata
+// lives at 0xd000, and our DFU/commit logic addresses the two app slots at
+// 0x10000 (slot 0) and 0x200000 (slot 1). These three offsets were verified
+// identical across stock 1.3.3 and 2.0.0 partition tables (only app *sizes* and
+// the fs partitions move between versions; these offsets do not, and the
+// bootloader's `Updating PT from PT0` resize preserves them). If a future stock
+// build -- or some other vendor image we don't know about -- ever moves them,
+// writing our record would corrupt boot on a table we don't understand. So we
+// check the LIVE partition table against these expectations before EVER writing,
+// and hard-refuse all boot-state writes on mismatch. Fail safe, loudly.
+static constexpr uint32_t SHOS_EXPECT_OTADATA_ADDR = 0x0000d000u;
+static constexpr uint32_t SHOS_EXPECT_APP0_ADDR = 0x00010000u;
+static constexpr uint32_t SHOS_EXPECT_APP1_ADDR = 0x00200000u;
+
 // Decoded, human-readable view of one copy.
 struct BootStateView {
   bool valid = false;   // passed structural validation
@@ -107,6 +122,23 @@ class BootState {
     out.ok = true;
     out.winner = pick_winner_(out.copy);
     return out;
+  }
+
+  // Proactive geometry guard. Verifies the LIVE partition table places otadata,
+  // app slot 0, and app slot 1 at exactly the offsets every SH0S write assumes
+  // (see SHOS_EXPECT_* above). Result is cached after the first call: the table
+  // can't change under a running image, so we check flash once and log once.
+  //
+  // Returns true only if ALL THREE match. On any mismatch it returns false and
+  // logs an error naming the offending partition -- and mutate_() then refuses
+  // every write, so commit/revert/DFU-stage/auto-commit all no-op safely rather
+  // than scribble an SH0S record onto a table whose slot geometry we don't know.
+  bool layout_ok() {
+    if (this->layout_checked_)
+      return this->layout_ok_;
+    this->layout_checked_ = true;
+    this->layout_ok_ = check_layout_();
+    return this->layout_ok_;
   }
 
   void log_state(const BootStatePair &p) {
@@ -226,6 +258,47 @@ class BootState {
     return body == c_body;
   }
 
+  // Verify one app slot sits at its expected offset. Logs and returns false on
+  // a missing partition or an address mismatch.
+  static bool check_app_slot_(esp_partition_subtype_t sub, uint32_t want, const char *name) {
+    const esp_partition_t *p =
+        esp_partition_find_first(ESP_PARTITION_TYPE_APP, sub, nullptr);
+    if (p == nullptr) {
+      ESP_LOGE(TAG, "layout guard: %s partition not found", name);
+      return false;
+    }
+    if (p->address != want) {
+      ESP_LOGE(TAG, "layout guard: %s at 0x%06x, expected 0x%06x -- refusing boot-state writes",
+               name, (unsigned) p->address, (unsigned) want);
+      return false;
+    }
+    return true;
+  }
+
+  // The actual three-way check behind layout_ok() (cached by that wrapper).
+  bool check_layout_() {
+    if (this->part_ == nullptr && !this->begin()) {
+      ESP_LOGE(TAG, "layout guard: no otadata partition -- refusing boot-state writes");
+      return false;
+    }
+    bool ok = true;
+    if (this->part_->address != SHOS_EXPECT_OTADATA_ADDR) {
+      ESP_LOGE(TAG, "layout guard: otadata at 0x%06x, expected 0x%06x -- refusing boot-state writes",
+               (unsigned) this->part_->address, (unsigned) SHOS_EXPECT_OTADATA_ADDR);
+      ok = false;
+    }
+    ok &= check_app_slot_(ESP_PARTITION_SUBTYPE_APP_OTA_0, SHOS_EXPECT_APP0_ADDR, "app slot 0 (ota_0)");
+    ok &= check_app_slot_(ESP_PARTITION_SUBTYPE_APP_OTA_1, SHOS_EXPECT_APP1_ADDR, "app slot 1 (ota_1)");
+    if (ok) {
+      ESP_LOGI(TAG, "layout guard OK: otadata@0x%06x app0@0x%06x app1@0x%06x",
+               (unsigned) SHOS_EXPECT_OTADATA_ADDR, (unsigned) SHOS_EXPECT_APP0_ADDR,
+               (unsigned) SHOS_EXPECT_APP1_ADDR);
+    } else {
+      ESP_LOGE(TAG, "layout guard FAILED -- SH0S commit/revert/DFU-stage/auto-commit all DISABLED");
+    }
+    return ok;
+  }
+
   // Bootloader boots the highest-seq VALID copy (selector 0x40080c74).
   static int pick_winner_(const BootStateView *copy) {
     int w = -1;
@@ -242,6 +315,13 @@ class BootState {
   bool mutate_(F fn) {
     if (this->part_ == nullptr && !this->begin()) {
       ESP_LOGW(TAG, "no otadata partition");
+      return false;
+    }
+    // Proactive guard: never write an SH0S record unless the live flash geometry
+    // is the one every offset here was reverse-engineered against. On any
+    // mismatch this refuses -- commit/revert/stage_ota/auto-commit all no-op.
+    if (!this->layout_ok()) {
+      ESP_LOGE(TAG, "boot-state write refused: partition layout guard failed");
       return false;
     }
     BootStatePair p = this->read();
@@ -328,6 +408,11 @@ class BootState {
   }
 
   const esp_partition_t *part_{nullptr};
+
+  // layout_ok() cache: the partition table is fixed for a running image, so the
+  // geometry check runs once against flash and the result is reused thereafter.
+  bool layout_checked_{false};
+  bool layout_ok_{false};
 };
 
 }  // namespace shelly_dimmer_core

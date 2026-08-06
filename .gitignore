@@ -19,6 +19,9 @@ ota/*.zip
 # ---- Vendor (Shelly) proprietary firmware — do NOT redistribute ----
 firmware/
 *.img
+# Exception: our OWN generic empty littlefs, a build input for the bridge
+# package (not a Shelly artifact). Must ship so github-sourced builds have it.
+!components/shelly_wall_dimmer/bridge_fs_empty.img
 
 # ---- Reverse-engineering + emulation artifacts (not needed to build) ----
 analysis/

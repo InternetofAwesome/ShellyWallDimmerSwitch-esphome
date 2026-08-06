@@ -23,11 +23,27 @@ ShellyWallDimmer = shelly_wall_dimmer_ns.class_(
 # sensor.py, text_sensor.py) to point an entity at its owning dimmer.
 CONF_SHELLY_WALL_DIMMER_ID = "shelly_wall_dimmer_id"
 
+# Optional "bridge package" build: on a successful compile, assemble the
+# stock-format Shelly OTA zip (the one-time image that gets this firmware onto a
+# still-stock dimmer via Shelly's own OTA) as a post-build step -- and, if
+# `push_to` is given, push it straight to that device. See shelly_pkg.py.
+CONF_BRIDGE_PACKAGE = "bridge_package"
+CONF_PUSH_TO = "push_to"
+
+BRIDGE_PACKAGE_SCHEMA = cv.Schema(
+    {
+        # Device IP (or hostname) to push the finished package to via
+        # Shelly.Update after the build. Omit to only produce the zip.
+        cv.Optional(CONF_PUSH_TO): cv.string_strict,
+    }
+)
+
 CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(ShellyWallDimmer),
             cv.Optional(CONF_UPDATE_INTERVAL, default="1s"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_BRIDGE_PACKAGE): BRIDGE_PACKAGE_SCHEMA,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -81,3 +97,17 @@ async def to_code(config):
     #      mark_app_valid_cancel_rollback (begin + boot) -> hard no-op
     cg.add_build_flag("-Wl,--wrap=esp_ota_set_boot_partition")
     cg.add_build_flag("-Wl,--wrap=esp_ota_mark_app_valid_cancel_rollback")
+
+    # ---- optional bridge-package build (post-build hook) --------------------
+    # When the user opts in, wire shelly_pkg.py in as a PlatformIO post-build
+    # script and hand it the paths/flags it needs via custom_ project options
+    # (readable from the SCons env with GetProjectOption). Nothing is injected
+    # unless `bridge_package:` is present, so a plain build is unaffected.
+    if CONF_BRIDGE_PACKAGE in config:
+        here = Path(__file__).parent
+        cg.add_platformio_option("extra_scripts", [f"post:{here / 'shelly_pkg.py'}"])
+        cg.add_platformio_option("custom_shelly_bridge", "1")
+        cg.add_platformio_option("custom_shelly_fs_img", str(here / "bridge_fs_empty.img"))
+        push_to = config[CONF_BRIDGE_PACKAGE].get(CONF_PUSH_TO)
+        if push_to:
+            cg.add_platformio_option("custom_shelly_push_ip", push_to)

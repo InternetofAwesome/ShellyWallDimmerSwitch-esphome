@@ -168,6 +168,11 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   // One-shot latch for maybe_autocommit_() so it runs at most once per boot.
   bool autocommit_done_{false};
 
+  // Cached result of the setup()-time partition-layout guard. False disables
+  // every boot-state write (BootState::mutate_ enforces the same check, but this
+  // lets us skip the auto-commit path entirely and report status in dump_config).
+  bool boot_state_layout_ok_{false};
+
   // Telemetry dedup: the co-processor reply is polled every ~1s and usually
   // repeats byte-for-byte (same temp, same frame). publish_state() emits a
   // state update to HA / the log stream on EVERY call, so republishing an

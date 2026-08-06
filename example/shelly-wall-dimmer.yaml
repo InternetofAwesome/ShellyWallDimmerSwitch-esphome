@@ -81,6 +81,13 @@ uart:
 shelly_wall_dimmer:
   id: dimmer_coprocessor
   update_interval: 1s  # periodic CMD_POLL so temperature/state stay fresh
+  # First-flash helper: build the stock-format Shelly OTA "bridge" zip on every
+  # successful compile (from build artifacts only -- no Shelly blobs). Add
+  # `push_to:` with the device IP to also serve it and trigger Shelly.Update on
+  # that device right after the build. Only needed for the very first flash onto
+  # a stock dimmer; after that, updates go over ESPHome-native OTA. See README.
+  # bridge_package:
+  #   push_to: 192.168.10.81
 
 light:
   - platform: shelly_wall_dimmer
@@ -88,7 +95,7 @@ light:
     # id so the v1 wall button (light.toggle) and the power-LED mirror
     # automations below can reference this light.
     id: dimmer_light
-    name: "Dimmer"
+    name: "Light"
     # The co-processor takes LINEAR 0-100% and applies its own dimming curve,
     # so ESPHome's default gamma (2.8) is a double-correction that crushes low
     # levels to 0 (5% -> ~0). Pass brightness through linearly.
@@ -109,108 +116,113 @@ number:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: kick_threshold
-    name: "Dimmer Kick Threshold"
+    name: "Kick Threshold"
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: kick_level
-    name: "Dimmer Kick Level"
+    name: "Kick Level"
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: kick_dwell_ms
-    name: "Dimmer Kick Dwell"
+    name: "Kick Dwell"
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: min_brightness
-    name: "Dimmer Min Brightness"
+    name: "Min Brightness"
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: max_brightness
-    name: "Dimmer Max Brightness"
+    name: "Max Brightness"
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: ramp_step_ms
-    name: "Dimmer Ramp Step Interval"
+    name: "Ramp Interval"
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: ramp_step_size
-    name: "Dimmer Ramp Step Size"
-  # Diagnostic raw-send: arbitrary byte value, paired with the button below.
-  # Sweeps the unused command space (0x65-0x7F / 0xE5-0xFE) from HA scripts,
-  # no reflash needed. Built-in `template` platform is the cleanest fit here
-  # (a one-off action target), not a custom entity class -- see
-  # DEV_REFERENCE.md §5.
-  - platform: template
-    id: raw_tx_byte
-    name: "Dimmer Raw TX Byte"
-    entity_category: diagnostic
-    min_value: 0
-    max_value: 255
-    step: 1
-    mode: box
-    optimistic: true
-    initial_value: 0
+    name: "Ramp Step"
+  # --- DEVELOPER TOOL (disabled by default) ---------------------------------
+  # Diagnostic raw-send: arbitrary byte value, paired with "Dimmer Send Raw
+  # Byte" in the (also-disabled) button block below. Sweeps the unused command
+  # space (0x65-0x7F / 0xE5-0xFE) from HA scripts, no reflash needed. Uncomment
+  # BOTH this and its button together (the button references this id).
+  # - platform: template
+  #   id: raw_tx_byte
+  #   name: "Raw TX Byte"
+  #   entity_category: diagnostic
+  #   min_value: 0
+  #   max_value: 255
+  #   step: 1
+  #   mode: box
+  #   optimistic: true
+  #   initial_value: 0
 
 switch:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
-    name: "Dimmer Kick Enabled"
+    name: "Kick Enabled"
 
 sensor:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
-    name: "Dimmer Temperature"
+    name: "Temperature"
 
 text_sensor:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: last_frame
-    name: "Dimmer Last Raw Frame"
+    name: "Last Frame"
     id: dimmer_last_frame
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: mcu_version
-    name: "Dimmer Co-processor Version"
+    name: "MCU Version"
 
-button:
-  # Fires the value currently set on `raw_tx_byte` straight at the
-  # co-processor via ShellyWallDimmer::send_raw() -- the HA-scriptable half
-  # of the diagnostic raw-send pair.
-  - platform: template
-    name: "Dimmer Send Raw Byte"
-    entity_category: diagnostic
-    on_press:
-      - lambda: |-
-          id(dimmer_coprocessor).send_raw((uint8_t) id(raw_tx_byte).state);
-  # Option B RE: dumps the raw otadata (boot-state) to the log so we can derive
-  # the record layout + checksum from real bytes. Remove before release.
-  - platform: template
-    name: "Dimmer Dump Boot State"
-    entity_category: diagnostic
-    on_press:
-      - lambda: 'id(dimmer_coprocessor).dump_boot_state();'
-  # SH0S boot-state control (CLAUDE.md "SH0S BOOT-STATE RECORD").
-  # "Log" is read-only and safe to press anytime -- decodes both otadata copies
-  # (as/rs/ba/c) and marks which the bootloader would boot.
-  - platform: template
-    name: "Boot State: Log"
-    entity_category: diagnostic
-    on_press:
-      - lambda: 'id(dimmer_coprocessor).log_boot_state();'
-  # DANGER -- Commit/Revert are each a ONE-SHOT FLASH WRITE to the non-winning
-  # otadata copy. Do NOT press either until the boot-state model has been
-  # confirmed on THIS live unit (dump + Log read back as expected). A wrong
-  # write to a USB-less device risks bricking it. Each writes exactly one copy
-  # and leaves the winner as a fallback, but confirm the model first.
-  - platform: template
-    name: "Boot State: Commit"
-    entity_category: diagnostic
-    on_press:
-      - lambda: 'id(dimmer_coprocessor).commit_boot_state();'
-  - platform: template
-    name: "Boot State: Revert To Stock"
-    entity_category: diagnostic
-    on_press:
-      - lambda: 'id(dimmer_coprocessor).revert_boot_state_to_stock();'
+# ---- DEVELOPER / RECOVERY TOOLS (disabled by default) ----------------------
+# These diagnostic buttons are intentionally shipped OFF. Normal operation never
+# needs them: a healthy new image self-commits (auto-commit-on-healthy in the
+# component) and a bad one auto-reverts via the SH0S ba-countdown -- all without
+# a button press. Uncomment the `button:` block (and the `raw_tx_byte` number
+# above, if you want raw-send) only when developing or recovering a unit.
+#
+# Safe, read-only:
+#   Boot State: Log   -- decode both otadata copies (as/rs/ba/committed).
+#   Dump Boot State   -- hex-dump raw otadata to the log.
+#   Send Raw Byte     -- push one arbitrary byte at the co-processor (protocol
+#                        sweeps); needs the raw_tx_byte number uncommented too.
+# DANGER, each a ONE-SHOT FLASH WRITE to the non-winning otadata copy (the
+# partition-layout guard refuses them on an unrecognized flash map, but confirm
+# the boot-state model on your unit with Log first):
+#   Boot State: Commit          -- make the running slot permanent now.
+#   Boot State: Revert To Stock -- hand the next boot back to the other slot.
+#
+# button:
+#   - platform: template
+#     name: "Send Raw Byte"
+#     entity_category: diagnostic
+#     on_press:
+#       - lambda: |-
+#           id(dimmer_coprocessor).send_raw((uint8_t) id(raw_tx_byte).state);
+#   - platform: template
+#     name: "Dump Boot State"
+#     entity_category: diagnostic
+#     on_press:
+#       - lambda: 'id(dimmer_coprocessor).dump_boot_state();'
+#   - platform: template
+#     name: "Boot: Log"
+#     entity_category: diagnostic
+#     on_press:
+#       - lambda: 'id(dimmer_coprocessor).log_boot_state();'
+#   - platform: template
+#     name: "Boot: Commit"
+#     entity_category: diagnostic
+#     on_press:
+#       - lambda: 'id(dimmer_coprocessor).commit_boot_state();'
+#   - platform: template
+#     name: "Boot: Revert"
+#     entity_category: diagnostic
+#     on_press:
+#       - lambda: 'id(dimmer_coprocessor).revert_boot_state_to_stock();'
 
 # ---- v1 LOCAL CONTROL: front button + status LEDs -------------------------
 # GPIOs confirmed from stock app disassembly. TWO THINGS TO BENCH-VERIFY:
@@ -227,7 +239,7 @@ binary_sensor:
   # Front tactile button ("key" net) on GPIO4. Preemptive path: a tap runs
   # through our engine via light.toggle, so turn-on gets the kick.
   - platform: gpio
-    name: "Dimmer Button"
+    name: "Button"
     pin:
       number: GPIO4
       # No ESP32 internal pull -- the board provides an external pull. Stock

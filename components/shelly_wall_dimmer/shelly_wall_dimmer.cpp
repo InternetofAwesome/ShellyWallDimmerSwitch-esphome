@@ -8,6 +8,18 @@ void ShellyWallDimmer::setup() {
   this->engine_.set_send_handler(&ShellyWallDimmer::send_byte_trampoline_, this);
   this->parser_.set_stray_handler(&ShellyWallDimmer::stray_byte_trampoline_, this);
 
+  // Proactive partition-layout guard: check the live flash geometry ONCE, up
+  // front, and cache it. If it doesn't match the offsets our SH0S boot-state
+  // logic was reverse-engineered against, every boot-state write (commit /
+  // revert / DFU-stage / auto-commit) refuses for the rest of this boot. Running
+  // it here means the ERROR banner is in the log from the start, not only when
+  // the first write is attempted. On the expected stock table this logs one
+  // "layout guard OK" line.
+  {
+    ::shelly_dimmer_core::BootState bs;
+    this->boot_state_layout_ok_ = bs.layout_ok();
+  }
+
   // Kick off with a poll so we learn the co-processor's current state fast,
   // rather than waiting for it to spontaneously stream something.
   this->write_byte(::shelly_dimmer_core::CMD_POLL);
@@ -42,6 +54,10 @@ void ShellyWallDimmer::maybe_autocommit_() {
   // writes flash when the currently-booted slot is still uncommitted (a fresh
   // DFU/OTA). Normal committed boots hit the early return after one cheap read.
   if (this->autocommit_done_)
+    return;
+  // Layout guard failed at setup(): boot-state writes are disabled this boot, so
+  // don't even walk the commit path (it would only refuse in mutate_ anyway).
+  if (!this->boot_state_layout_ok_)
     return;
   if (millis() < AUTOCOMMIT_HEALTHY_MS)
     return;
@@ -98,7 +114,10 @@ void ShellyWallDimmer::handle_status_frame_(const ::shelly_dimmer_core::StatusFr
   // Push the engine's resulting state to HA, but only on an actual change --
   // the co-processor only streams frames when something changed anyway, but
   // our own CMD_POLL replies can repeat the same values.
-  this->maybe_publish_light_state_(this->engine_.current_brightness(), this->engine_.is_on());
+  // Publish on the HA 0-100 scale: current_brightness_ha() inverse-maps the
+  // device brightness back through the min/max window so HA shows 0-100 even
+  // though the wire value is stretched into [min,max].
+  this->maybe_publish_light_state_(this->engine_.current_brightness_ha(), this->engine_.is_on());
 }
 
 void ShellyWallDimmer::maybe_publish_light_state_(uint8_t brightness_pct, bool on) {
@@ -161,6 +180,9 @@ void ShellyWallDimmer::dump_config() {
   ESP_LOGCONFIG(TAG, "  Ramp: step %u%% every %ums", params.ramp_step_size, (unsigned) params.ramp_step_ms);
   ESP_LOGCONFIG(TAG, "  Clamp: %u-%u%%", params.min_brightness, params.max_brightness);
   ESP_LOGCONFIG(TAG, "  Status poll interval: %ums", (unsigned) this->update_interval_ms_);
+  ESP_LOGCONFIG(TAG, "  Boot-state writes (commit/revert/DFU): %s",
+                this->boot_state_layout_ok_ ? "ENABLED (layout guard OK)"
+                                            : "DISABLED (partition layout guard FAILED)");
   this->check_uart_settings(115200);
 }
 
