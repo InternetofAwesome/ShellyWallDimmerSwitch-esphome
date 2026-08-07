@@ -10,19 +10,17 @@
 # `bridge_package:` block, via:
 #   extra_scripts = post:<this file>
 #   custom_shelly_bridge  = 1
-#   custom_shelly_fs_img  = <abs path to bridge_fs_empty.img>
 #   custom_shelly_push_ip = <device ip>        (present only if push requested)
 #
 # Everything here is Python stdlib only -- it runs inside PlatformIO's own
 # interpreter, which has no guaranteed third-party packages.
 #
-# Package composition (all self-contained; no Shelly binaries redistributed):
-#   pt  = the partition-table.bin generated from our own partitions.csv
-#   app = this build's firmware.bin (ESPHome app image)
-#   fs  = a generic empty littlefs image bundled with the component
-# Manifest: compatible "DimmerUS", app name "PlusWallDimmer", cs_sha1+cs_sha256
-# per part, no signature (relies on the target's signature-required eFuse being
-# unburned -- the solder-free delivery gate; see CLAUDE.md OTA PATH ANALYSIS).
+# Package composition: the APP PART ONLY (this build's firmware.bin). No
+# partition table, no filesystem image -- see the long comment in
+# _build_package() for why adding either back is a device-bricking hazard.
+# Manifest: compatible "DimmerUS", app name "PlusWallDimmer", cs_sha1+cs_sha256,
+# no signature (relies on the target's signature-required eFuse being unburned
+# -- the solder-free delivery gate; see CLAUDE.md OTA PATH ANALYSIS).
 
 Import("env")  # noqa: F821  (provided by PlatformIO/SCons)
 
@@ -58,17 +56,7 @@ def _read_app_desc(app_path):
     return version, project
 
 
-def _find_partition_table(build_dir):
-    for cand in (
-        os.path.join(build_dir, "partition_table", "partition-table.bin"),  # esp-idf framework
-        os.path.join(build_dir, "partitions.bin"),                          # arduino framework
-    ):
-        if os.path.exists(cand):
-            return cand
-    return None
-
-
-def _build_package(app, pt, fs, out_zip):
+def _build_package(app, out_zip):
     version, project = _read_app_desc(app)
     if not version:
         print("!! shelly-bridge: firmware.bin is not a valid ESP app image; skipping package")
@@ -83,10 +71,33 @@ def _build_package(app, pt, fs, out_zip):
         print(f"!! shelly-bridge: app version is '{version}' -- stock OTA dedupes on this. "
               f"Set the `fw_version` substitution to something unique per build.")
 
+    # APP ONLY -- deliberately. Do NOT add "pt" or "fs" parts back without
+    # reading this:
+    #
+    # The stock partition tables differ BETWEEN FIRMWARE VERSIONS. 1.3.3 has
+    # app slots of 0x180000 with fs_0 = 0x70000; 2.0.0 has app slots of
+    # 0x190000 with fs_0 = 0x60000. A package is built once and may land on
+    # either. Shipping our build's own table or a fixed-size filesystem image
+    # therefore corrupts the OTHER (fallback) slot on a device whose stock
+    # version doesn't match what we cut them from:
+    #
+    #   pt : our table declares app slots of 0x180000. Stock 2.0.0's own app
+    #        image is 0x186E00 -- 28 KB LARGER. Flashing our table would leave
+    #        the stock image in the fallback slot no longer fitting its own
+    #        partition, i.e. an invalid rollback target.
+    #   fs : our empty filesystem image is 0x70000. On 2.0.0, fs_0 is only
+    #        0x60000 at 0x1a0000, so the last 0x10000 bytes land at 0x200000
+    #        -- which is app_1, the fallback slot. Direct corruption.
+    #
+    # Both would break the auto-revert that makes the first flash reversible,
+    # on a device with no USB. Neither part buys anything: the three offsets
+    # this firmware depends on (otadata@0xd000, app_0@0x10000, app_1@0x200000)
+    # are IDENTICAL across stock versions, the Shelly bootloader re-syncs the
+    # live table from its own PT0 regardless, and this firmware never mounts a
+    # filesystem (ESPHome stores preferences in NVS). Shipping the app alone is
+    # both sufficient and version-agnostic.
     parts_spec = [
-        ("pt", pt, {"type": "pt", "addr": 32768}),
         ("app", app, {"type": "app", "ptn": "app_0"}),
-        ("fs", fs, {"type": "fs", "ptn": "fs_0", "fs_size": os.path.getsize(fs)}),
     ]
     manifest = {
         "name": APP_NAME,
@@ -202,17 +213,8 @@ def _after_build(source, target, env):  # noqa: ARG001
     if not os.path.exists(app):
         print("!! shelly-bridge: firmware.bin not found; skipping package")
         return
-    pt = _find_partition_table(build_dir)
-    if pt is None:
-        print("!! shelly-bridge: partition-table.bin not found; skipping package")
-        return
-    fs = env.GetProjectOption("custom_shelly_fs_img", "")
-    if not fs or not os.path.exists(fs):
-        print(f"!! shelly-bridge: fs image missing ({fs}); skipping package")
-        return
-
     out_zip = os.path.join(build_dir, "shelly-bridge", f"{APP_NAME}-bridge.zip")
-    made = _build_package(app, pt, fs, out_zip)
+    made = _build_package(app, out_zip)
     if not made:
         return
 

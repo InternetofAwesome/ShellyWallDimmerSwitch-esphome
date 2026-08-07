@@ -48,6 +48,16 @@ esp32:
   # chip reports 2 cores). We force single-core operation via
   # CONFIG_FREERTOS_UNICORE in the component to match Shelly's stock build.
   board: esp32dev
+  # REQUIRED for bridge_package (below): that feature hooks a PlatformIO
+  # post-build script. As of ESPHome 2026.7.0 the esp32 platform's DEFAULT
+  # build backend switched to ESPHome's own native ESP-IDF driver, which never
+  # generates a platformio.ini and silently never runs that hook -- the package
+  # just never gets built, no error. `toolchain: platformio` opts back into the
+  # PlatformIO-driven build ("continue to build exactly as they did before",
+  # per the 2026.7.0 release notes); everything else about the build is
+  # unaffected. The component also catches a missing `toolchain: platformio`
+  # at config-validate time if bridge_package is configured without it.
+  toolchain: platformio
   framework:
     type: esp-idf
     # Use ESPHome's RECOMMENDED ESP-IDF (currently 5.5.x) -- no version pin.
@@ -62,7 +72,7 @@ esp32:
     # --wrap shims -- are ALL injected automatically by the shelly_wall_dimmer
     # component (components/shelly_wall_dimmer/__init__.py). That keeps this a
     # plain ESPHome esp-idf config: no partitions:/sdkconfig_options:/advanced:
-    # keys needed here, and the default toolchain (platformio) is used.
+    # keys needed here.
 
 # UART1 to the APT32S003 dimming co-processor. PROTOCOL.md: 115200 8N1,
 # single raw command bytes out, framed '$...#' status frames in.

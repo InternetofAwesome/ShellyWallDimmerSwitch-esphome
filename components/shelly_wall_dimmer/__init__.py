@@ -4,6 +4,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import esp32, uart
 from esphome.const import CONF_ID, CONF_UPDATE_INTERVAL
+from esphome.core import CORE
 
 CODEOWNERS = ["@InternetofAwesome"]
 DEPENDENCIES = ["uart"]
@@ -50,14 +51,39 @@ CONFIG_SCHEMA = (
     .extend(uart.UART_DEVICE_SCHEMA)
 )
 
+
+def _validate_bridge_toolchain(config):
+    # bridge_package hooks a PlatformIO post-build script (SCons env.AddPostAction
+    # in shelly_pkg.py). As of ESPHome 2026.7.0 the esp32 platform's DEFAULT build
+    # backend switched to ESPHome's own native ESP-IDF driver (idf.py/cmake+ninja),
+    # which never generates a platformio.ini and never reads anything set via
+    # cg.add_platformio_option -- so under that default the hook is silently never
+    # invoked; the package is never built and nothing gets pushed, with no error at
+    # all. `toolchain: platformio` opts back into the PlatformIO-driven build
+    # ("continue to build exactly as they did before", per the 2026.7.0 release
+    # notes) and is what actually makes this feature run. Caught here, at
+    # config-validate time, instead of failing silently at build time.
+    if CONF_BRIDGE_PACKAGE in config and CORE.using_toolchain_esp_idf:
+        raise cv.Invalid(
+            "bridge_package requires the PlatformIO build backend (it hooks a "
+            "PlatformIO post-build script, which ESPHome's native ESP-IDF toolchain "
+            "-- the esp32 platform's default since 2026.7.0 -- never runs). Add "
+            "`toolchain: platformio` to the `esp32:` block."
+        )
+    return config
+
+
 # Enforces the protocol's fixed 115200 8N1 and that both directions are wired
 # -- catches a bad `uart:` block at config-validate time instead of a silent
-# runtime hang. See PROTOCOL.md.
-FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
-    "shelly_wall_dimmer",
-    baud_rate=115200,
-    require_rx=True,
-    require_tx=True,
+# runtime hang. See PROTOCOL.md. Composed with the bridge/toolchain check above.
+FINAL_VALIDATE_SCHEMA = cv.All(
+    _validate_bridge_toolchain,
+    uart.final_validate_device_schema(
+        "shelly_wall_dimmer",
+        baud_rate=115200,
+        require_rx=True,
+        require_tx=True,
+    ),
 )
 
 
@@ -102,12 +128,13 @@ async def to_code(config):
     # When the user opts in, wire shelly_pkg.py in as a PlatformIO post-build
     # script and hand it the paths/flags it needs via custom_ project options
     # (readable from the SCons env with GetProjectOption). Nothing is injected
-    # unless `bridge_package:` is present, so a plain build is unaffected.
+    # unless `bridge_package:` is present, so a plain build is unaffected. Needs
+    # `toolchain: platformio` -- see _validate_bridge_toolchain() above, which
+    # catches the alternative (silently building nothing) before we get here.
     if CONF_BRIDGE_PACKAGE in config:
         here = Path(__file__).parent
         cg.add_platformio_option("extra_scripts", [f"post:{here / 'shelly_pkg.py'}"])
         cg.add_platformio_option("custom_shelly_bridge", "1")
-        cg.add_platformio_option("custom_shelly_fs_img", str(here / "bridge_fs_empty.img"))
         push_to = config[CONF_BRIDGE_PACKAGE].get(CONF_PUSH_TO)
         if push_to:
             cg.add_platformio_option("custom_shelly_push_ip", push_to)
