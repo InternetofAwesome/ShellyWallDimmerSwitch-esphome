@@ -39,27 +39,44 @@ This is a heavily AI written project. I, a career firmware engineer was in the l
 
 **You need:**
 
-- A **Shelly Plus Wall Dimmer US** (`SNDM-0013US`) on your LAN — stock firmware (1.3.x~2.0.0 tested in emulator), local access on, IP known.
-- **ESPHome** — the Builder add-on in Home Assistant, or the CLI on the same LAN.
-- A filled-in **`secrets.yaml`** in ESPHome (Wi-Fi, API key, OTA password, AP password) — see [`example/secrets.yaml.example`](example/secrets.yaml.example).
+- A **Shelly Plus Wall Dimmer US** (`SNDM-0013US`) on your LAN — stock firmware (1.3.x–2.0.0 tested in emulator), local access on, and **its IP address** (you'll point the bridge at it).
+- **ESPHome** — the Builder add-on in Home Assistant (these steps), or the CLI.
+
+Nothing else: no cable, no USB-serial adapter, no disassembly.
 
 **Steps:**
 
-1. Drop [`example/shelly-wall-dimmer.yaml`](example/shelly-wall-dimmer.yaml) and your `secrets.yaml` (if you don't already have one) into `/config/esphome/` (Builder) or a working dir (CLI). The `esp32:` block needs **`board: esp32dev`** and **`toolchain: platformio`** — the bridge build hooks a PlatformIO post-build step, and since ESPHome 2026.7.0 the esp32 default is the native ESP-IDF backend, which never runs it. (Configure `bridge_package` without it and the component stops you at config time.)
-2. Set a unique `fw_version` each build (a timestamp works). Stock dedupes on the version baked into the app image — if it doesn't change, stock downloads the update and silently drops it. Note this makes ESPHome rewrite `sdkconfig`, so a changed `fw_version` forces a full rebuild.
-3. Point the bridge at your dimmer:
-   ```yaml
-   shelly_wall_dimmer:
-     id: shelly_esphome_dimmer
-     bridge_package:
-       push_to: 192.168.10.81   # your dimmer's IP
-   ```
-4. **Compile** (Builder: *Install → Manual download/compile* — no serial port). On success the component builds a stock-format package and, because `push_to` is set, serves it and triggers `Shelly.Update`. Watch for `>> shelly-bridge:` lines. *(If `push_to` disabled: The zip lands in the build's `shelly-bridge/` folder — deliver it yourself with `Shelly.Update {url: ...}`.)*
-5. The dimmer writes it to its **inactive** slot and reboots into it — stock stays in the other slot. Watch `esphome logs` for your `fw_version` and a `layout guard OK` line.
-6. After ~30 s healthy it **auto-commits** (see developer options below for commit rollback). A crash-looping build **auto-reverts to stock** on its own. Either way you're covered.
-7. From here, update over **Wi-Fi OTA** like any ESPHome device — drop `bridge_package`. OTA stays boot-safe automatically.
+1. **ESPHome Builder → `+ NEW DEVICE`.** Give it a name (e.g. `office-lights`); pick **ESP32** if asked. The wizard writes a starter config with a generated API encryption key and OTA password, and puts your Wi-Fi credentials in `secrets.yaml`. Let it finish, then **skip** the install it offers.
 
-**If this first build misbehaves,** it auto-reverts to stock on its own (that's slot B, still untouched). **Boot: Revert** (below) does the same thing manually. Neither of these is "back to stock" once you flash a *second* time — see below.
+2. **Edit the new device and replace its contents** with [`example/shelly-wall-dimmer.yaml`](example/shelly-wall-dimmer.yaml) — but **keep the `api:` and `ota:` blocks the wizard generated**, since those hold this device's keys. Set `name:` / `friendly_name:` to match, and add an `ap_password:` to `secrets.yaml` for the fallback hotspot. Leave the `esp32:` block's **`board: esp32dev`** and **`toolchain: platformio`** as they are — the bridge hooks a PlatformIO post-build step, and since ESPHome 2026.7.0 the esp32 default is the native ESP-IDF backend, which never runs it. (Configure `bridge_package` without it and the component stops you at config time rather than silently doing nothing.)
+
+3. **Point the bridge at your dimmer and set a unique version:**
+   ```yaml
+   substitutions:
+     fw_version: "2026.08.07-1"   # bump this for every bridge push
+
+   shelly_wall_dimmer:
+     id: dimmer_coprocessor       # the entities below refer to this name
+     bridge_package:
+       push_to: 192.168.1.50      # YOUR dimmer's IP
+   ```
+   Stock dedupes on the version baked into the app image, so an unchanged `fw_version` means stock downloads the package and silently discards it. Changing it rewrites `sdkconfig`, which forces a full rebuild — expect the first builds to take a while.
+
+4. **Install → `Manual download`.** *Not* Wireless: the dimmer is still running stock and has no ESPHome OTA to talk to. Manual download simply **compiles**, which is all the bridge needs — the post-build step assembles the package, serves it, and calls `Shelly.Update` on the device itself. Watch the log for:
+   ```
+   >> shelly-bridge: wrote .../PlusWallDimmer-bridge.zip
+   >> shelly-bridge: triggering Shelly.Update on 192.168.1.50 ...
+   >> shelly-bridge: device fetched the package
+   ```
+   You can ignore/discard the `.bin` the browser offers to download. *(No `push_to`? The zip lands in the build's `shelly-bridge/` folder — deliver it yourself with `Shelly.Update {url: ...}`.)*
+
+5. **The dimmer flashes its inactive slot and reboots into our firmware** — stock stays untouched in the other slot. The device goes **online** in the Builder; open its **Logs** and confirm your `fw_version` in the boot banner and a `layout guard OK` line.
+
+6. **Home Assistant discovers it.** Settings → Devices & Services → the ESPHome integration should offer the new device; add it (paste the API key if prompted) and the entities appear.
+
+7. **Comment out `bridge_package:`** — it's a first-flash-only tool. Leave `toolchain: platformio` alone. **Don't reinstall just to apply that edit:** your next install is your *second* flash, and that is what overwrites the slot still holding stock. From then on, `Install → Wireless` works like any ESPHome device, and stays boot-safe automatically.
+
+**If this first build misbehaves,** it auto-reverts to stock on its own after a few failed boots (that's slot B, still untouched); **Boot: Revert** (below) does the same on demand. Neither is "back to stock" once you've flashed a *second* time — see the next section.
 
 ---
 
@@ -149,7 +166,7 @@ Standard ESPHome platforms in the example — no custom options. GPIOs:
 The example keeps a set of diagnostic buttons **commented out** — normal operation never needs them (a healthy image self-commits, a bad one auto-reverts). Uncomment the `button:` block (and `raw_tx_byte`, for raw-send) to use them.
 
 - Read-only: **Boot: Log** (decode both boot-state copies), **Dump Boot State** (hex dump), **Send Raw Byte** (push one arbitrary byte at the co-processor).
-- Writes flash: **Boot: Commit** (make the running slot permanent now), **Boot: Revert** (hand the next boot back to stock).
+- Writes flash: **Boot: Commit** (make the running slot permanent now), **Boot: Revert** (point the next boot at the *other slot* — which is stock only until your second flash overwrites it).
 
 Each write touches only one of the two boot-state copies, and the partition-layout guard refuses it on any flash map it doesn't recognize — but press **Boot: Log** and sanity-check first.
 
@@ -159,15 +176,17 @@ Each write touches only one of the two boot-state copies, and the partition-layo
 
 ## Testing
 
-The kick/ramp/range-mapping logic is a standalone, pure-C++ engine — unit-tested without ESPHome or hardware:
+Two suites, both runnable without hardware:
 
 ```sh
 cd tests && make
 ```
 
-Needs only a C++17 compiler. ~400 assertions drive the real engine and check the exact bytes it emits: range mapping (plus a round-trip stability sweep), the single-pivot kick, ramp cadence / partial-step / no-overshoot, off-preserves-brightness-bits, fade-out, and the no-op reflection guard. See [`tests/README.md`](tests/README.md).
+**Engine** — the kick/ramp/range-mapping logic is standalone pure C++, so ~400 assertions drive the *real* engine with nothing but a C++17 compiler and check the exact bytes it puts on the wire: range mapping (plus a round-trip stability sweep), the single-pivot kick, ramp cadence / partial-step / no-overshoot, off-preserves-brightness-bits, fade-out, and the no-op reflection guard.
 
-What that can't reach (ESPHome glue, SH0S boot-state + DFU, the bridge packager, live UART) is covered by `esphome compile` and on-device bring-up.
+**Bridge package** — asserts the first-flash package can never write onto the fallback app slot or the partition table, checked against every known stock layout. Its opt-in QEMU layer assembles a 2.0.0-shaped flash, applies the package, and boots it against the **real Shelly bootloader** to confirm stock still comes up and our firmware loads from the targeted slot with the rollback countdown armed. That layer needs your own (non-redistributable) stock firmware files and skips cleanly without them.
+
+See [`tests/README.md`](tests/README.md). What neither reaches — ESPHome glue, SH0S boot-state writes on real flash, live UART timing — is covered by `esphome compile` and on-device bring-up.
 
 ---
 
@@ -176,7 +195,7 @@ What that can't reach (ESPHome glue, SH0S boot-state + DFU, the bridge packager,
 - `components/shelly_wall_dimmer/` — the main ESPHome component.
 - `components/status_led_pwm/` — small light platform: a dimmable PWM status LED that blinks on ESPHome's warning/error state (the WiFi LED).
 - `example/` — device config + `secrets.yaml.example`.
-- `tests/` — standalone engine unit tests.
+- `tests/` — engine unit tests + bridge-package safety tests (incl. a QEMU boot).
 
 ## License
 
