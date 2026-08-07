@@ -1,3 +1,7 @@
+#DO NOT USE THIS COMMIT
+
+
+
 # ShellyWallDimmerSwitch-esphome
 
 Custom [ESPHome](https://esphome.io) firmware for the **Shelly Plus Wall Dimmer US** (`SNDM-0013US`). It replaces the stock ESP32 firmware and leaves the dimming co-processor (an APT32S003) alone — the ESP32 just speaks its single-byte UART protocol.
