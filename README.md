@@ -45,8 +45,8 @@ This is a heavily AI written project. I, a career firmware engineer was in the l
 
 **Steps:**
 
-1. Drop [`example/shelly-wall-dimmer.yaml`](example/shelly-wall-dimmer.yaml) and your `secrets.yaml` (if you don't already have one) into `/config/esphome/` (Builder) or a working dir (CLI). The `esp32:` block wants **`board: esp32dev`**.
-2. Set a unique `fw_version` each build (a timestamp works). Stock dedupes on it — if it doesn't change, stock downloads the update and silently drops it.
+1. Drop [`example/shelly-wall-dimmer.yaml`](example/shelly-wall-dimmer.yaml) and your `secrets.yaml` (if you don't already have one) into `/config/esphome/` (Builder) or a working dir (CLI). The `esp32:` block needs **`board: esp32dev`** and **`toolchain: platformio`** — the bridge build hooks a PlatformIO post-build step, and since ESPHome 2026.7.0 the esp32 default is the native ESP-IDF backend, which never runs it. (Configure `bridge_package` without it and the component stops you at config time.)
+2. Set a unique `fw_version` each build (a timestamp works). Stock dedupes on the version baked into the app image — if it doesn't change, stock downloads the update and silently drops it. Note this makes ESPHome rewrite `sdkconfig`, so a changed `fw_version` forces a full rebuild.
 3. Point the bridge at your dimmer:
    ```yaml
    shelly_wall_dimmer:
@@ -90,7 +90,9 @@ Everything is a native HA entity. Start from the example and trim what you don't
 | `update_interval` | `1s` | Co-processor poll rate (keeps temperature/state fresh). |
 | `bridge_package` | off | Build the first-flash package on compile (below). |
 
-`bridge_package:` assembles the stock-format OTA zip from build artifacts only — app + the partition table built from this component + an empty filesystem image. **No Shelly binaries are redistributed.** Sub-option `push_to: <ip>` serves it and calls `Shelly.Update` on that device after a good build (the host address is derived from the route to it). Omit `push_to` to just produce the zip.
+`bridge_package:` assembles the stock-format OTA zip containing **only the app image** — no partition table, no filesystem. **No Shelly binaries are redistributed.** Sub-option `push_to: <ip>` serves it and calls `Shelly.Update` on that device after a good build (the host address is derived from the route to it). Omit `push_to` to just produce the zip. Requires `toolchain: platformio` (see Quick start).
+
+App-only is a safety requirement, not a simplification. Stock partition layouts **differ between firmware versions** (1.3.3 uses 0x180000 app slots with a 0x70000 `fs_0`; 2.0.0 uses 0x190000 and 0x60000). A package is built once and may land on either, so shipping our own table or a fixed-size filesystem image corrupts the *other* slot — the stock firmware that is your only rollback path — on any device whose version doesn't match what those parts were cut from. Neither part is needed: the three offsets this firmware depends on (`otadata@0xd000`, `app_0@0x10000`, `app_1@0x200000`) are identical across versions, the Shelly bootloader re-syncs the live table from its own copy anyway, and this firmware never mounts a filesystem. [`tests/bridge_package_test.py`](tests/bridge_package_test.py) pins this, including a QEMU boot against the real Shelly bootloader.
 
 ### Light — `platform: shelly_wall_dimmer`
 

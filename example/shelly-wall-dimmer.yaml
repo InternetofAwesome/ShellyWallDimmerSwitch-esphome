@@ -6,14 +6,17 @@
 substitutions:
   name: shelly-wall-dimmer
   friendly_name: "Wall Dimmer"
-  # Per-build version stamped into esp_app_desc.version. Stock's OTA updater
-  # gates on THIS field ("same version: %.*s" in shelly_update.cpp) -- it reads
-  # the version from the app image, NOT from manifest.json (proven: a unique
-  # manifest version was ignored). If this string doesn't change build-to-build,
-  # stock downloads the zip and silently discards it as "same version". The
-  # build wrapper (ota/build_and_stage.sh) overrides this with a fresh
-  # timestamp via `-s fw_version ...` on every compile; the default below is
-  # only a fallback so a bare `esphome config/compile` still validates.
+  # Per-build version. Stock's OTA updater gates on esp_app_desc.version in the
+  # APP IMAGE ("same version: %.*s" in shelly_update.cpp), NOT on manifest.json
+  # (proven: a unique manifest version was ignored). If it doesn't change
+  # build-to-build, stock downloads the zip and silently discards it.
+  #
+  # ESPHome's `project: version:` alone does NOT reach that field -- it only
+  # emits a C++ define, leaving app_desc carrying ESPHome's own release number,
+  # identical every build. When `bridge_package:` is configured, the component
+  # wires this value through to IDF's CONFIG_APP_PROJECT_VER so it actually
+  # lands in the image. Bump it for each bridge push (a timestamp works); note
+  # that changing it rewrites sdkconfig and so forces a full rebuild.
   fw_version: "0.0.0-dev"
 
 esphome:

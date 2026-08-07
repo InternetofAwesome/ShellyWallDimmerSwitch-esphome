@@ -138,3 +138,30 @@ async def to_code(config):
         push_to = config[CONF_BRIDGE_PACKAGE].get(CONF_PUSH_TO)
         if push_to:
             cg.add_platformio_option("custom_shelly_push_ip", push_to)
+
+        # Make `esphome: project: version:` actually reach esp_app_desc.version.
+        #
+        # Stock's updater dedupes on the version embedded in the APP IMAGE
+        # ("same version: %.*s" in shelly_update.cpp) -- not on manifest.json.
+        # ESPHome's `project: version:` only emits a C++ define
+        # (ESPHOME_PROJECT_VERSION); it never touches app_desc, which otherwise
+        # carries ESPHome's own release number and is therefore IDENTICAL across
+        # builds. The practical effect is that a second bridge push of a changed
+        # firmware is silently discarded by stock as "same version" -- the exact
+        # trap the README warns about, with the documented remedy (bump
+        # fw_version) having no effect at all. Wiring it to IDF's
+        # CONFIG_APP_PROJECT_VER fixes that.
+        #
+        # Scoped to bridge_package on purpose: changing any sdkconfig value makes
+        # ESPHome clean the build directory, so doing this unconditionally would
+        # turn every version bump into a full rebuild for everyone. The bridge is
+        # a one-time, per-device operation, so paying it there is fine; normal
+        # ESPHome OTA updates (the steady state) are unaffected.
+        project = (CORE.config.get("esphome") or {}).get("project") or {}
+        version = project.get("version")
+        if version:
+            # IDF caps CONFIG_APP_PROJECT_VER at 32 bytes including the NUL.
+            if len(version) > 31:
+                version = version[:31]
+            esp32.add_idf_sdkconfig_option("CONFIG_APP_PROJECT_VER_FROM_CONFIG", True)
+            esp32.add_idf_sdkconfig_option("CONFIG_APP_PROJECT_VER", version)
