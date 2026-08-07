@@ -104,22 +104,22 @@ light:
     # streaming its own interpolated write_state calls. Let a set be a single
     # request into our state machine.
     default_transition_length: 0s
-    # v1 power-LED mirror ("match_output"): drive GPIO25 to follow the dimmer
-    # on/off state. These fire on the logical on/off edges, not per ramp step,
-    # so the LED tracks state cleanly without flickering during a kick/ramp.
+    # Power LED as a locator: INVERSE of the dimmer -- on when the light is OFF
+    # (find the switch in the dark), off when the light is on. Fires on the
+    # logical on/off edges, not per ramp step.
     on_turn_on:
-      - light.turn_on: power_led
-    on_turn_off:
       - light.turn_off: power_led
+    on_turn_off:
+      - light.turn_on: power_led
 
   # ---- status LEDs as dimmable ~1000 Hz PWM indicators --------------------
-  # Both physical LEDs are driven by ledc PWM channels (see `output:` below) and
-  # exposed as monochromatic lights, so each gets an HA brightness slider. That
-  # brightness is the level used whenever the LED is on.
+  # Both physical LEDs are driven by ledc PWM channels (see `output:` below), each
+  # with its own HA brightness slider.
   #
-  # Power LED: mirrors the dimmer's on/off (the automations above). light.turn_on
-  # restores this light's brightness, so the slider IS the "on" level. Brightness
-  # persists across reboots; the light starts off and the mirror drives on/off.
+  # Power LED: a locator, driven inverse to the dimmer by the automations above
+  # (on while the dimmer is off). Its brightness slider is its own fixed "on"
+  # level -- it does NOT track the dimmer's brightness. Defaults on (dimmer
+  # assumed off at boot); the mirror corrects it once the dimmer reports state.
   - platform: monochromatic
     id: power_led
     name: "Power LED"
@@ -127,11 +127,11 @@ light:
     entity_category: config
     gamma_correct: 0          # slider % maps straight to PWM duty
     default_transition_length: 0s
-    restore_mode: RESTORE_AND_OFF
-  # WiFi/sys LED: dimmable AND keeps the status indication. `status_led_pwm` (our
-  # component) hooks the same app-state mechanism as ESPHome's status_led -- it
-  # blinks on AP/connecting/warning/error -- but drives the PWM channel, so its
-  # steady "on" level is this light's configurable brightness. Best of both.
+    restore_mode: RESTORE_DEFAULT_ON
+  # WiFi/sys LED: a Wi-Fi/status ERROR indicator only. Off while everything is
+  # healthy; blinks on AP/connecting/warning/error via the status_led_pwm
+  # component (same app-state hook as ESPHome's status_led) at this light's
+  # configurable brightness. The light's on/off is a master enable (on = active).
   - platform: status_led_pwm
     id: wifi_led
     name: "WiFi LED"

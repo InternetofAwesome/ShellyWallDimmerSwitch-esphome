@@ -6,11 +6,14 @@
 
 namespace esphome::status_led_pwm {
 
-// A brightness-capable status LED. It hooks the SAME app-state mechanism as
-// ESPHome's built-in status_led (App.get_app_state(): blink fast on ERROR, slow
-// on WARNING) but drives a FloatOutput (PWM) instead of a binary pin -- so its
-// steady "on" level is the light's configurable brightness, while it still shows
-// AP/connecting/warning/error by blinking. A drop-in dimmable status_led.
+// A dimmable status/error indicator over a PWM (FloatOutput). It hooks the SAME
+// App.get_app_state() mechanism as ESPHome's built-in status_led -- fast blink on
+// ERROR, slow blink on WARNING (e.g. Wi-Fi down / connecting / AP mode) -- but
+// drives a PWM channel, so the blink level is the light's configurable brightness.
+//
+// It is an INDICATOR, not a general light: in the healthy (OK) state it stays
+// OFF; it only lights to signal a problem. The HA light's on/off is a master
+// enable (off = indicator disabled); its brightness sets the blink level.
 class StatusLedPwmLight : public light::LightOutput, public Component {
  public:
   void set_output(output::FloatOutput *output) { this->output_ = output; }
@@ -21,24 +24,21 @@ class StatusLedPwmLight : public light::LightOutput, public Component {
     return traits;
   }
 
-  void setup_state(light::LightState *state) override {
-    this->lightstate_ = state;
-    this->write_state(state);
-  }
   void write_state(light::LightState *state) override;
   void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::HARDWARE; }
 
  protected:
-  // Drive the PWM to the light's current brightness (0 when off). Gamma and
-  // on/off are already folded into current_values_as_brightness, matching how
-  // the monochromatic light drives its output.
-  void apply_light_level_();
+  // Recompute the output from the current app state + enable/level and push it.
+  void refresh_();
+  // Set the PWM only on change (avoid re-writing every loop).
+  void drive_(float level);
 
   output::FloatOutput *output_{nullptr};
-  light::LightState *lightstate_{nullptr};
-  uint8_t last_app_state_{0xFF};
+  bool enabled_{false};   // light on == indicator enabled
+  float level_{1.0f};     // blink brightness while enabled
+  float last_out_{-1.0f};
 };
 
 }  // namespace esphome::status_led_pwm
