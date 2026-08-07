@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include "esphome/core/component.h"
@@ -64,6 +65,14 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   // brightness_pct: 0-100. Routes through the engine's kick/ramp/clamp state
   // machine rather than sending the byte directly.
   void request(bool on, uint8_t brightness_pct) { this->engine_.request(on, brightness_pct, millis()); }
+
+  // ---- called by DimmerTransitionTransformer::start() ----
+  // Same as request(), but ramps to the target over exactly transition_ms -- the
+  // hook for a Home Assistant "transition: Ns" on a light call. See
+  // DimmerEngine::request_transition() for the cadence math.
+  void request_transition(bool on, uint8_t brightness_pct, uint32_t transition_ms) {
+    this->engine_.request_transition(on, brightness_pct, transition_ms, millis());
+  }
 
   // ---- the live kick/ramp/clamp engine; number.py / switch.py entities
   // write straight into engine_.params() from their control() ----
@@ -192,6 +201,50 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   bool awaiting_version_line_{false};
 };
 
+// ---- HA "transition: Ns" support --------------------------------------------
+// ESPHome's light core owns EXPLICIT transitions: create_default_transition()
+// is called once per light call that carries one, and the returned transformer's
+// apply() is called every loop tick, interpolating brightness itself and (if it
+// returns a value) driving write_state() with each intermediate step. That would
+// fight our own kick/ramp engine, which owns a single, quantized, non-dithered
+// cadence of its own. (default_transition_length: 0s in the example only sets
+// the IMPLICIT default when no transition is given -- an explicit one still
+// reaches here regardless of that setting.)
+//
+// So instead of letting the base transformer interpolate, this hands the
+// requested duration straight to DimmerEngine::request_transition(), which
+// ramps using the SAME cadence machinery as ramp_rate, just at a rate derived
+// from this call's length. apply() returns no color values -- per LightState's
+// own contract ("if the transition has written directly to the output,
+// current_values is outdated, so update it"), that's the documented way for a
+// transformer to drive the hardware itself; write_state() is then never called
+// during the transition, so nothing double-drives the UART.
+//
+// One narrow consequence of driving the hardware directly here: start() reads
+// the RAW (pre-gamma) target brightness, whereas a plain write_state() call
+// gamma-corrects via current_values_as_brightness(). Identical in practice --
+// this component already requires gamma_correct: 0 (the co-processor has its
+// own curve) -- but would diverge if that were ever changed.
+class DimmerTransitionTransformer : public light::LightTransformer {
+ public:
+  explicit DimmerTransitionTransformer(ShellyWallDimmer *parent) : parent_(parent) {}
+
+  void start() override {
+    bool on = this->target_values_.is_on();
+    auto brightness_pct = static_cast<uint8_t>(this->target_values_.get_brightness() * 100.0f + 0.5f);
+    this->parent_->request_transition(on, brightness_pct, this->length_);
+  }
+
+  optional<light::LightColorValues> apply() override { return {}; }
+
+  // Finished when our OWN ramp settles, not purely by elapsed wall time -- the
+  // quantized cadence can land a little before/after the nominal length.
+  bool is_finished() override { return !this->parent_->get_engine().busy(); }
+
+ protected:
+  ShellyWallDimmer *parent_;
+};
+
 // ---- dimmable light, split from the UART owner per DEV_REFERENCE.md §3 ---
 class DimmerLight : public light::LightOutput, public Parented<ShellyWallDimmer> {
  public:
@@ -204,6 +257,10 @@ class DimmerLight : public light::LightOutput, public Parented<ShellyWallDimmer>
   // Captures the LightState so the parent can push device-side state
   // changes (cap-touch slider moves, kick/ramp completion) back to HA.
   void setup_state(light::LightState *state) override { this->parent_->set_light_state(state); }
+
+  std::unique_ptr<light::LightTransformer> create_default_transition() override {
+    return std::make_unique<DimmerTransitionTransformer>(this->parent_);
+  }
 
   void write_state(light::LightState *state) override {
     bool on;

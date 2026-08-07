@@ -68,6 +68,33 @@ class DimmerEngine {
   bool is_on() const { return on_; }
   bool busy() const { return mode_ != Mode::IDLE; }
 
+  // Same as request(), but ramp to the target over EXACTLY transition_ms instead
+  // of the configured ramp_rate -- the engine-side hook for a Home Assistant
+  // "transition: Ns" on a light call (see DimmerTransitionTransformer in the
+  // ESPHome wrapper). Overrides ramp_on_change/ramp_on_off for this one call:
+  // an EXPLICIT transition always ramps, even if those toggles are off. If a
+  // kick is in play, the strike snap to kick_level is still instantaneous
+  // (that's what makes low brightnesses reachable at all) -- the requested
+  // duration covers the ramp after it, the same segment ramp_rate would cover.
+  // transition_ms == 0 behaves exactly like request().
+  void request_transition(bool on, uint8_t brightness, uint32_t transition_ms, uint32_t now_ms) {
+    if (transition_ms == 0) {
+      request(on, brightness, now_ms);
+      return;
+    }
+    transition_ms_override_ = transition_ms;
+    force_ramp_ = true;
+    request(on, brightness, now_ms);
+    force_ramp_ = false;
+    // A kicked below-pivot turn-on defers its ramp to tick() (after the dwell) --
+    // leave the override set so THAT start_ramp_to() call still picks it up.
+    // Otherwise it's already been consumed (a ramp fired synchronously above) or
+    // never applicable (a no-op / an immediate command with no ramp at all) --
+    // clear it so it can't leak into a later, unrelated ramp.
+    if (mode_ != Mode::KICK_PRIMING)
+      transition_ms_override_ = 0;
+  }
+
   // External request from HA / the light layer / the pushbutton.
   void request(bool on, uint8_t brightness, uint32_t now_ms) {
     // Idempotent no-op: when settled (IDLE) and already in exactly the
@@ -91,7 +118,7 @@ class DimmerEngine {
     // OFF: fade to black then off (ramp_on_off), or immediate off. The immediate
     // path preserves the brightness bits so a later on can restore the level.
     if (!on || brightness == 0) {
-      if (p_.ramp_on_off && on_ && current_ > 0) {
+      if ((p_.ramp_on_off || force_ramp_) && on_ && current_ > 0) {
         start_ramp_to(0, now_ms, /*to_off=*/true);
       } else {
         emit(encode_command(false, current_));
@@ -125,7 +152,7 @@ class DimmerEngine {
     } else if (was_off) {
       // Non-kick turn-on: fade in from 0 (ramp_on_off) or jump straight there.
       on_ = true;
-      if (p_.ramp_on_off) {
+      if (p_.ramp_on_off || force_ramp_) {
         current_ = 0;
         start_ramp_to(t, now_ms, false);
       } else {
@@ -136,7 +163,7 @@ class DimmerEngine {
     } else {
       // Brightness change while on: ramp (ramp_on_change) or jump.
       on_ = true;
-      if (p_.ramp_on_change) {
+      if (p_.ramp_on_change || force_ramp_) {
         start_ramp_to(t, now_ms, false);
       } else {
         emit(encode_command(true, t));
@@ -221,13 +248,16 @@ class DimmerEngine {
     return uint8_t((uint32_t(real - lo) * 100 + span / 2) / span);
   }
 
-  // Convert ramp_rate (%/s) into a fixed (step, interval) cadence, quantized to
+  // Convert a rate (%/s) into a fixed (step, interval) cadence, quantized to
   // RAMP_MIN_PERIOD_MS. No dithering: one step size and one interval per ramp;
   // the only imprecision is integer-ms rounding of the interval (<= half a
   // period). For R <= 100 %/s a 1% step is slower than the floor, so we stretch
   // the interval; above that we widen the step and keep interval >= the floor.
-  void ramp_cadence_(uint8_t &step, uint32_t &interval_ms) const {
-    uint32_t R = p_.ramp_rate;
+  // Takes the rate explicitly (rather than always reading p_.ramp_rate) so the
+  // same math serves both the configured ramp_rate and a one-shot rate derived
+  // from an explicit transition duration (see start_ramp_to()).
+  static void ramp_cadence_(uint16_t rate_pps, uint8_t &step, uint32_t &interval_ms) {
+    uint32_t R = rate_pps;
     if (R < RAMP_RATE_MIN) R = RAMP_RATE_MIN;
     if (R > RAMP_RATE_MAX) R = RAMP_RATE_MAX;
     if (1000u / R >= RAMP_MIN_PERIOD_MS) {
@@ -241,14 +271,27 @@ class DimmerEngine {
     if (interval_ms < 1) interval_ms = 1;
   }
 
-  // Begin (or instantly complete) a ramp from current_ to tgt at ramp_rate.
+  // Begin (or instantly complete) a ramp from current_ to tgt. Uses ramp_rate,
+  // UNLESS transition_ms_override_ is set (an explicit Home Assistant
+  // "transition: Ns" via request_transition()) -- then it derives the %/s rate
+  // that spans exactly this ramp segment in that duration, clamped to the same
+  // bounds as ramp_rate, and consumes (clears) the override: it applies to
+  // exactly the one ramp segment it was requested for.
   // to_off: finish by sending the OFF command (fade-out) instead of an on level.
   void start_ramp_to(uint8_t tgt, uint32_t now_ms, bool to_off) {
     target_ = tgt;
     pending_off_ = to_off;
-    ramp_cadence_(ramp_step_, ramp_interval_ms_);
     uint32_t adist = current_ >= target_ ? uint32_t(current_ - target_)
                                          : uint32_t(target_ - current_);
+    uint16_t rate = p_.ramp_rate;
+    if (transition_ms_override_ != 0) {
+      uint32_t r = (adist * 1000u + transition_ms_override_ / 2) / transition_ms_override_;
+      if (r < RAMP_RATE_MIN) r = RAMP_RATE_MIN;
+      if (r > RAMP_RATE_MAX) r = RAMP_RATE_MAX;
+      rate = uint16_t(r);
+      transition_ms_override_ = 0;
+    }
+    ramp_cadence_(rate, ramp_step_, ramp_interval_ms_);
     if (adist <= ramp_step_) {  // one move (or none) lands exactly on the setpoint
       current_ = target_;
       finish_ramp_();
@@ -293,6 +336,10 @@ class DimmerEngine {
   uint8_t ramp_step_ = 1;         // current ramp's step size (pct), set at start
   uint32_t ramp_interval_ms_ = 20;  // current ramp's step interval, set at start
   bool pending_off_ = false;      // fade-out in progress: send OFF on completion
+
+  // request_transition() support (see there + start_ramp_to()).
+  bool force_ramp_ = false;             // ramp even if the ramp_on_*/toggle is off
+  uint32_t transition_ms_override_ = 0;  // one-shot explicit duration; 0 = use ramp_rate
 };
 
 }  // namespace shelly_dimmer_core
