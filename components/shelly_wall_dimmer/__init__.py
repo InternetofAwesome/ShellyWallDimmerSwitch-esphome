@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import esphome.codegen as cg
@@ -52,6 +53,86 @@ CONFIG_SCHEMA = (
 )
 
 
+def _invocation_will_upload():
+    """True if this esphome invocation is going to push firmware at a device.
+
+    ESPHome dispatches through one function per CLI command, so read that
+    directly off the call stack rather than guessing from sys.argv (which also
+    carries `-s KEY VALUE` substitutions and assorted global flags):
+
+        command_compile  -> builds only            (safe for the bridge)
+        command_run      -> builds THEN uploads    (not safe, see below)
+        command_upload   -> uploads                (not safe)
+
+    Falls back to an argv scan, and finally to "no" -- failing open on purpose,
+    because wrongly blocking a plain compile would break the documented
+    first-flash flow, while this check is defence-in-depth behind a README that
+    already says to use compile-only.
+    """
+    import inspect
+
+    uploads = {"command_run", "command_upload"}
+    builds_only = {"command_compile", "command_config", "command_idedata", "command_clean"}
+    try:
+        for frame in inspect.stack():
+            if frame.function in uploads:
+                return True
+            if frame.function in builds_only:
+                return False
+    except Exception:  # noqa: BLE001  -- detection must never break a build
+        pass
+
+    argv = sys.argv[1:]
+    skip_next = 0
+    for i, tok in enumerate(argv):
+        if skip_next:
+            skip_next -= 1
+            continue
+        if tok in ("-s", "--substitution"):
+            skip_next = 2  # KEY VALUE
+            continue
+        if tok.startswith("-"):
+            continue
+        if tok in ("run", "upload"):
+            return True
+        if tok in ("compile", "config", "clean", "logs", "idedata"):
+            return False
+    return False
+
+
+def _validate_bridge_upload(config):
+    """Refuse to build the bridge package as part of an upload job.
+
+    `bridge_package` delivers firmware by an entirely separate path: it POSTs
+    Shelly.Update at `push_to` during the post-build step. Combining that with
+    ESPHome's own OTA in one invocation is genuinely destructive rather than
+    merely redundant:
+
+      * On a still-stock dimmer, the bridge flashes the inactive slot and the
+        device reboots into THIS firmware -- which speaks ESPHome OTA. The
+        upload half of the same command can then land on the OTHER slot, the one
+        still holding stock. A single "Install" would consume both slots and
+        destroy the rollback target, silently.
+      * On an already-converted dimmer, the bridge still POSTs at whatever IP
+        `push_to` names. If that value is stale it flashes a DIFFERENT device
+        while the OTA updates the intended one.
+
+    So the bridge is compile-only, by construction. In the ESPHome Builder that
+    means "Manual download"; on the CLI, `esphome compile`.
+    """
+    if CONF_BRIDGE_PACKAGE in config and _invocation_will_upload():
+        raise cv.Invalid(
+            "bridge_package must not run as part of an upload/install job. It "
+            "delivers firmware over Shelly's OTA at compile time, so combining it "
+            "with an ESPHome OTA in one command can flash two slots (destroying "
+            "the stock fallback) or flash the wrong device. Use a compile-only "
+            "build -- ESPHome Builder: 'Manual download'; CLI: `esphome compile`. "
+            "Once the device is running this firmware, comment out `bridge_package:` "
+            "and install wirelessly as normal."
+        )
+    return config
+
+
 def _validate_bridge_toolchain(config):
     # bridge_package hooks a PlatformIO post-build script (SCons env.AddPostAction
     # in shelly_pkg.py). As of ESPHome 2026.7.0 the esp32 platform's DEFAULT build
@@ -77,6 +158,7 @@ def _validate_bridge_toolchain(config):
 # -- catches a bad `uart:` block at config-validate time instead of a silent
 # runtime hang. See PROTOCOL.md. Composed with the bridge/toolchain check above.
 FINAL_VALIDATE_SCHEMA = cv.All(
+    _validate_bridge_upload,
     _validate_bridge_toolchain,
     uart.final_validate_device_schema(
         "shelly_wall_dimmer",

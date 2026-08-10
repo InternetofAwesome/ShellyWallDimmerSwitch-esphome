@@ -62,7 +62,7 @@ Nothing else: no cable, no USB-serial adapter, no disassembly.
    ```
    Stock dedupes on the version baked into the app image, so an unchanged `fw_version` means stock downloads the package and silently discards it. Changing it rewrites `sdkconfig`, which forces a full rebuild — expect the first builds to take a while.
 
-4. **Install → `Manual download`.** *Not* Wireless: the dimmer is still running stock and has no ESPHome OTA to talk to. Manual download simply **compiles**, which is all the bridge needs — the post-build step assembles the package, serves it, and calls `Shelly.Update` on the device itself. Watch the log for:
+4. **Install → `Manual download`.** *Not* Wireless. Manual download simply **compiles**, which is all the bridge needs — the post-build step assembles the package, serves it, and calls `Shelly.Update` on the device itself. This isn't just a preference: with `bridge_package` configured the component **refuses to build at all** for an install/upload job, because the two delivery paths in one command can flash both slots and destroy your stock fallback (see below). Watch the log for:
    ```
    >> shelly-bridge: wrote .../PlusWallDimmer-bridge.zip
    >> shelly-bridge: triggering Shelly.Update on 192.168.1.50 ...
@@ -108,6 +108,8 @@ Everything is a native HA entity. Start from the example and trim what you don't
 | `bridge_package` | off | Build the first-flash package on compile (below). |
 
 `bridge_package:` assembles the stock-format OTA zip containing **only the app image** — no partition table, no filesystem. **No Shelly binaries are redistributed.** Sub-option `push_to: <ip>` serves it and calls `Shelly.Update` on that device after a good build (the host address is derived from the route to it). Omit `push_to` to just produce the zip. Requires `toolchain: platformio` (see Quick start).
+
+**The bridge is compile-only, and that is enforced.** It delivers firmware over Shelly's OTA during the post-build step, so pairing it with ESPHome's own OTA in a single command is destructive rather than redundant: on a still-stock dimmer the bridge flashes the inactive slot and the device reboots into *this* firmware — which speaks ESPHome OTA — so the upload half of the same command can land on the **other** slot, the one still holding stock. One "Install" would consume both slots and silently destroy the rollback target. (On an already-converted dimmer, a stale `push_to` would instead flash a *different* device while the OTA updates the intended one.) Configure `bridge_package` and run an install/upload and the component fails validation before anything is built or sent.
 
 App-only is a safety requirement, not a simplification. Stock partition layouts **differ between firmware versions** (1.3.3 uses 0x180000 app slots with a 0x70000 `fs_0`; 2.0.0 uses 0x190000 and 0x60000). A package is built once and may land on either, so shipping our own table or a fixed-size filesystem image corrupts the *other* slot — the stock firmware that is your only rollback path — on any device whose version doesn't match what those parts were cut from. Neither part is needed: the three offsets this firmware depends on (`otadata@0xd000`, `app_0@0x10000`, `app_1@0x200000`) are identical across versions, the Shelly bootloader re-syncs the live table from its own copy anyway, and this firmware never mounts a filesystem. [`tests/bridge_package_test.py`](tests/bridge_package_test.py) pins this, including a QEMU boot against the real Shelly bootloader.
 
