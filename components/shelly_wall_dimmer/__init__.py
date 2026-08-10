@@ -1,3 +1,5 @@
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -6,6 +8,8 @@ import esphome.config_validation as cv
 from esphome.components import esp32, uart
 from esphome.const import CONF_ID, CONF_UPDATE_INTERVAL
 from esphome.core import CORE
+
+_LOGGER = logging.getLogger(__name__)
 
 CODEOWNERS = ["@InternetofAwesome"]
 DEPENDENCIES = ["uart"]
@@ -53,38 +57,65 @@ CONFIG_SCHEMA = (
 )
 
 
-def _invocation_will_upload():
-    """True if this esphome invocation is going to push firmware at a device.
+# Escape hatch for the fail-closed check below. Deliberately verbose: it should
+# be something you type on purpose after reading why, never something you have
+# lying around in a shell profile.
+BRIDGE_UNVERIFIED_ENV = "SHELLY_BRIDGE_ALLOW_UNVERIFIED_INVOCATION"
 
-    ESPHome dispatches through one function per CLI command, so read that
-    directly off the call stack rather than guessing from sys.argv (which also
-    carries `-s KEY VALUE` substitutions and assorted global flags):
+# ESPHome's CLI verbs. Only the config-validating ones can reach this component's
+# FINAL_VALIDATE_SCHEMA, but the dashboard/vscode servers may validate in-process
+# (where argv still names them), so those are listed too -- with the check now
+# failing CLOSED, every omission here would be a hard block on a legitimate path.
+_UPLOAD_COMMANDS = frozenset({"run", "upload"})
+_NON_UPLOAD_COMMANDS = frozenset({
+    # validate a config, never upload
+    "config", "config-hash", "compile", "logs", "clean", "clean-mqtt",
+    "idedata", "rename", "discover", "analyze-memory", "bundle",
+    # never validate a config themselves; listed for in-process validation
+    # and for argv matching. `update-all` spawns child `run` invocations, and
+    # each child is checked on its own.
+    "dashboard", "vscode", "wizard", "version", "update-all", "clean-all",
+})
 
-        command_compile  -> builds only            (safe for the bridge)
-        command_run      -> builds THEN uploads    (not safe, see below)
-        command_upload   -> uploads                (not safe)
 
-    Falls back to an argv scan, and finally to "no" -- failing open on purpose,
-    because wrongly blocking a plain compile would break the documented
-    first-flash flow, while this check is defence-in-depth behind a README that
-    already says to use compile-only.
+def _cmd_func(name):
+    """CLI verb -> the esphome function that implements it ("clean-mqtt" ->
+    "command_clean_mqtt"), so both detection layers share one source of truth."""
+    return "command_" + name.replace("-", "_")
+
+
+_UPLOAD_FUNCS = frozenset(_cmd_func(c) for c in _UPLOAD_COMMANDS)
+_NON_UPLOAD_FUNCS = frozenset(_cmd_func(c) for c in _NON_UPLOAD_COMMANDS)
+
+
+def _invocation_kind():
+    """Classify this esphome invocation: "upload", "safe", or "unknown".
+
+    ESPHome dispatches through one function per CLI verb, so read that off the
+    call stack rather than guessing from sys.argv (which also carries
+    `-s KEY VALUE` substitutions and other global options). argv is the fallback.
+
+        command_run / command_upload -> "upload"  (bridge must not run)
+        command_compile, ...         -> "safe"
+        neither recognised           -> "unknown"
+
+    "unknown" means the detection itself is broken -- ESPHome renamed its
+    commands, or something is driving the config API directly. It is reported,
+    never silently treated as safe; see _validate_bridge_upload.
     """
     import inspect
 
-    uploads = {"command_run", "command_upload"}
-    builds_only = {"command_compile", "command_config", "command_idedata", "command_clean"}
     try:
         for frame in inspect.stack():
-            if frame.function in uploads:
-                return True
-            if frame.function in builds_only:
-                return False
-    except Exception:  # noqa: BLE001  -- detection must never break a build
+            if frame.function in _UPLOAD_FUNCS:
+                return "upload"
+            if frame.function in _NON_UPLOAD_FUNCS:
+                return "safe"
+    except Exception:  # noqa: BLE001  -- detection must never crash a build
         pass
 
-    argv = sys.argv[1:]
     skip_next = 0
-    for i, tok in enumerate(argv):
+    for tok in sys.argv[1:]:
         if skip_next:
             skip_next -= 1
             continue
@@ -93,11 +124,11 @@ def _invocation_will_upload():
             continue
         if tok.startswith("-"):
             continue
-        if tok in ("run", "upload"):
-            return True
-        if tok in ("compile", "config", "clean", "logs", "idedata"):
-            return False
-    return False
+        if tok in _UPLOAD_COMMANDS:
+            return "upload"
+        if tok in _NON_UPLOAD_COMMANDS:
+            return "safe"
+    return "unknown"
 
 
 def _validate_bridge_upload(config):
@@ -119,8 +150,21 @@ def _validate_bridge_upload(config):
 
     So the bridge is compile-only, by construction. In the ESPHome Builder that
     means "Manual download"; on the CLI, `esphome compile`.
+
+    This check fails CLOSED: if it cannot tell what kind of invocation this is,
+    it refuses rather than assuming the safe case. A guard that exists to protect
+    against a destructive mistake is worthless if it silently stops guarding, and
+    the cost of being wrong is asymmetric -- a false block is a visible, harmless
+    error, while a false allow can cost the only rollback path on a device with
+    no USB. BRIDGE_UNVERIFIED_ENV overrides it for the case where detection
+    breaks against a future ESPHome and you have verified the invocation
+    yourself.
     """
-    if CONF_BRIDGE_PACKAGE in config and _invocation_will_upload():
+    if CONF_BRIDGE_PACKAGE not in config:
+        return config
+
+    kind = _invocation_kind()
+    if kind == "upload":
         raise cv.Invalid(
             "bridge_package must not run as part of an upload/install job. It "
             "delivers firmware over Shelly's OTA at compile time, so combining it "
@@ -129,6 +173,27 @@ def _validate_bridge_upload(config):
             "build -- ESPHome Builder: 'Manual download'; CLI: `esphome compile`. "
             "Once the device is running this firmware, comment out `bridge_package:` "
             "and install wirelessly as normal."
+        )
+    if kind == "unknown":
+        if os.environ.get(BRIDGE_UNVERIFIED_ENV):
+            _LOGGER.warning(
+                "shelly_wall_dimmer: could not determine whether this invocation "
+                "uploads; proceeding because %s is set. The bridge will build AND "
+                "push firmware over Shelly's OTA -- make sure this is a "
+                "compile-only job and that push_to names the intended device.",
+                BRIDGE_UNVERIFIED_ENV,
+            )
+            return config
+        raise cv.Invalid(
+            "bridge_package refused: could not determine whether this invocation "
+            "uploads firmware, so the safety check that keeps the bridge "
+            "compile-only cannot be enforced. This usually means ESPHome renamed "
+            "its CLI commands and this component needs updating -- please report "
+            "it. Refusing rather than guessing, because guessing wrong here can "
+            "flash both firmware slots and destroy the stock rollback image on a "
+            "device with no USB port. To proceed anyway once you have confirmed "
+            "this is a compile-only build (ESPHome Builder: 'Manual download'; "
+            f"CLI: `esphome compile`), set {BRIDGE_UNVERIFIED_ENV}=1."
         )
     return config
 
