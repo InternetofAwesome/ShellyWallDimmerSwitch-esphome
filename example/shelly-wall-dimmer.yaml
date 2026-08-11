@@ -179,21 +179,8 @@ number:
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: ramp_rate
     name: "Ramp Rate"
-  # --- DEVELOPER TOOL (disabled by default) ---------------------------------
-  # Diagnostic raw-send: arbitrary byte value, paired with "Dimmer Send Raw
-  # Byte" in the (also-disabled) button block below. Sweeps the unused command
-  # space (0x65-0x7F / 0xE5-0xFE) from HA scripts, no reflash needed. Uncomment
-  # BOTH this and its button together (the button references this id).
-  # - platform: template
-  #   id: raw_tx_byte
-  #   name: "Raw TX Byte"
-  #   entity_category: diagnostic
-  #   min_value: 0
-  #   max_value: 255
-  #   step: 1
-  #   mode: box
-  #   optimistic: true
-  #   initial_value: 0
+  # (The optional `raw_tx_byte` diagnostic number belongs here -- see
+  # "RAW-SEND PROTOCOL TOOL" near the bottom of this file for both halves.)
 
 switch:
   - platform: shelly_wall_dimmer
@@ -243,31 +230,28 @@ text_sensor:
     type: mcu_version
     name: "MCU Version"
 
-# ---- DEVELOPER / RECOVERY TOOLS (disabled by default) ----------------------
-# These diagnostic buttons are intentionally shipped OFF. Normal operation never
-# needs them: a healthy new image self-commits (auto-commit-on-healthy in the
-# component) and a bad one auto-reverts via the SH0S ba-countdown -- all without
-# a button press. Uncomment the `button:` block (and the `raw_tx_byte` number
-# above, if you want raw-send) only when developing or recovering a unit.
+# ---- RECOVERY BUTTONS (disabled by default) --------------------------------
+# Shipped OFF because normal operation never needs them: a healthy image
+# self-commits (auto-commit-on-healthy) and a bad one auto-reverts via the SH0S
+# ba-countdown, with no button press. Worth enabling for a FIRST conversion of a
+# hard-to-reach unit: "Boot: Revert" is the deliberate way back to stock while
+# stock still occupies the other slot.
 #
-# Safe, read-only:
-#   Boot State: Log   -- decode both otadata copies (as/rs/ba/committed).
+# This block is SELF-CONTAINED -- uncomment the whole thing and it validates.
+# (The raw-send tool is separate, at the bottom of this file, because it needs a
+# matching `number:` entry.)
+#
+# Read-only, safe to press anytime:
+#   Boot: Log         -- decode both otadata copies (as/rs/ba/committed).
 #   Dump Boot State   -- hex-dump raw otadata to the log.
-#   Send Raw Byte     -- push one arbitrary byte at the co-processor (protocol
-#                        sweeps); needs the raw_tx_byte number uncommented too.
-# DANGER, each a ONE-SHOT FLASH WRITE to the non-winning otadata copy (the
-# partition-layout guard refuses them on an unrecognized flash map, but confirm
-# the boot-state model on your unit with Log first):
-#   Boot State: Commit          -- make the running slot permanent now.
-#   Boot State: Revert To Stock -- hand the next boot back to the other slot.
+# ONE-SHOT FLASH WRITE each (to the non-winning otadata copy; the
+# partition-layout guard refuses them on an unrecognized flash map -- still,
+# press "Boot: Log" and sanity-check the decode first):
+#   Boot: Commit      -- make the running slot permanent now.
+#   Boot: Revert      -- point the next boot at the other slot (stock, until
+#                        your second flash overwrites it).
 #
 # button:
-#   - platform: template
-#     name: "Send Raw Byte"
-#     entity_category: diagnostic
-#     on_press:
-#       - lambda: |-
-#           id(dimmer_coprocessor).send_raw((uint8_t) id(raw_tx_byte).state);
 #   - platform: template
 #     name: "Dump Boot State"
 #     entity_category: diagnostic
@@ -288,6 +272,33 @@ text_sensor:
 #     entity_category: diagnostic
 #     on_press:
 #       - lambda: 'id(dimmer_coprocessor).revert_boot_state_to_stock();'
+
+# ---- RAW-SEND PROTOCOL TOOL (disabled by default) --------------------------
+# Pushes one arbitrary byte at the co-processor, for sweeping the unused command
+# space (0x65-0x7F / 0xE5-0xFE) from HA without reflashing. Not needed for
+# installation or recovery -- this is protocol archaeology.
+#
+# TWO PARTS, and YAML allows only one `button:` key, so they cannot be one block.
+# To enable, do BOTH:
+#   1. add this entry to the `number:` section above:
+#        - platform: template
+#          id: raw_tx_byte
+#          name: "Raw TX Byte"
+#          entity_category: diagnostic
+#          min_value: 0
+#          max_value: 255
+#          step: 1
+#          mode: box
+#          optimistic: true
+#          initial_value: 0
+#   2. add this entry to the `button:` block above (which must be uncommented):
+#        - platform: template
+#          name: "Send Raw Byte"
+#          entity_category: diagnostic
+#          on_press:
+#            - lambda: |-
+#                id(dimmer_coprocessor).send_raw((uint8_t) id(raw_tx_byte).state);
+# Enabling only part 2 fails with: Couldn't find ID 'raw_tx_byte'.
 
 # ---- v1 LOCAL CONTROL: front button + status LEDs -------------------------
 # GPIOs confirmed from stock app disassembly. TWO THINGS TO BENCH-VERIFY:
