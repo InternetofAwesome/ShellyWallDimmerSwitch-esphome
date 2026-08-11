@@ -301,15 +301,15 @@ text_sensor:
 # Enabling only part 2 fails with: Couldn't find ID 'raw_tx_byte'.
 
 # ---- v1 LOCAL CONTROL: front button + status LEDs -------------------------
-# GPIOs confirmed from stock app disassembly. TWO THINGS TO BENCH-VERIFY:
-#   (1) BUTTON ACTIVE LEVEL -- `inverted: true` below assumes active-low (button
-#       to GND + external board pullup, the near-certain wiring). If a tap reads
-#       backwards (light toggles on release, or state is stuck), flip `inverted`.
-#   (2) LED ASSIGNMENT + ACTIVE LEVEL -- wifi(GPIO33)/power(GPIO25) split is
-#       circumstantial, and the stock LED manager applies its own inversion, so
-#       physical polarity is NOT firmware-pinned. If an LED is on when it should
-#       be off (or the two are swapped), flip the matching `inverted:` / swap the
-#       two pin numbers. All four possibilities are cosmetic-only, never harmful.
+# GPIOs confirmed from stock app disassembly.
+#   (1) BUTTON ACTIVE LEVEL -- STILL TO BENCH-VERIFY. `inverted: true` below
+#       assumes active-low (button to GND + external board pullup, the
+#       near-certain wiring). If a tap reads backwards (light toggles on
+#       release, or state is stuck), flip `inverted`.
+#   (2) LED ACTIVE LEVEL -- RESOLVED on a real unit: both LEDs are active-low,
+#       so the ledc outputs above set `inverted: true`. The wifi(GPIO33)/
+#       power(GPIO25) ASSIGNMENT is still circumstantial; if the two behave as
+#       though swapped, exchange the pin numbers. Cosmetic only, never harmful.
 
 binary_sensor:
   # Front tactile button ("key" net) on GPIO4. Preemptive path: a tap runs
@@ -330,15 +330,25 @@ binary_sensor:
 
 output:
   # Status-LED PWM channels at ~1000 Hz (ledc). Brightness + on/off both come
-  # from the monochromatic lights above. If an LED reads inverted (on when it
-  # should be off), invert its pin, e.g. `pin: {number: GPIO25, inverted: true}`.
+  # from the monochromatic lights above.
+  #
+  # BENCH-CONFIRMED on a real unit: both LEDs are ACTIVE-LOW -- the pin sinks
+  # the LED, so a 0% duty lit them fully and 100% turned them off. `inverted:
+  # true` is applied at the PIN, which ledc honours by flipping the duty
+  # (state = 1 - state), so the HA brightness sliders keep meaning what they say:
+  # 0% = dark, 100% = full. Inverting at the light/output layer instead would
+  # have made the sliders read backwards.
   - platform: ledc
     id: power_led_pwm
-    pin: GPIO25          # BENCH-VERIFY (2): active level / pin assignment
+    pin:
+      number: GPIO25
+      inverted: true
     frequency: 1000Hz
   - platform: ledc
     id: wifi_led_pwm
-    pin: GPIO33          # BENCH-VERIFY (2): active level / pin assignment
+    pin:
+      number: GPIO33
+      inverted: true
     frequency: 1000Hz
 
 wifi:
