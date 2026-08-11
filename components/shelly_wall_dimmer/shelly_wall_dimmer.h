@@ -41,6 +41,9 @@ enum class DimmerSwitchType {
   RAMP_ON_CHANGE,
   RAMP_ON_OFF,
   LIMIT_CORRECT,
+  // Not an engine parameter: permission to let an OTA erase the slot that still
+  // holds stock firmware. Persisted, set-once-and-forget. See dfu_wrap.cpp.
+  ALLOW_OVERWRITE_STOCK,
 };
 
 class ShellyWallDimmer : public Component, public uart::UARTDevice {
@@ -320,6 +323,12 @@ class DimmerSwitch : public switch_::Switch, public Component, public Parented<S
   void set_type(DimmerSwitchType type) { this->type_ = type; }
 
   void setup() override {
+    if (this->type_ == DimmerSwitchType::ALLOW_OVERWRITE_STOCK) {
+      // This one must survive reboots -- it is a standing permission, not a
+      // tuning knob, so honour the restore mode instead of a YAML default.
+      this->write_state(this->get_initial_state_with_restore_mode().value_or(false));
+      return;
+    }
     // Prime the engine from the switch's boot-time (restored or YAML
     // default) state, mirroring DimmerNumber::setup().
     this->write_state(this->state);
@@ -327,6 +336,18 @@ class DimmerSwitch : public switch_::Switch, public Component, public Parented<S
 
  protected:
   void write_state(bool state) override {
+    if (this->type_ == DimmerSwitchType::ALLOW_OVERWRITE_STOCK) {
+      ::shelly_dimmer_core::g_allow_overwrite_stock = state;
+      if (state) {
+        ESP_LOGW("shelly_wall_dimmer",
+                 "Allow Overwrite Stock ENABLED: the next OTA may erase the slot holding "
+                 "stock firmware. This permanently removes the ability to revert to stock.");
+      } else {
+        ESP_LOGI("shelly_wall_dimmer", "Allow Overwrite Stock disabled: stock slot protected");
+      }
+      this->publish_state(state);
+      return;
+    }
     auto &params = this->parent_->get_engine().params();
     switch (this->type_) {
       case DimmerSwitchType::KICK_ENABLED:
@@ -341,6 +362,8 @@ class DimmerSwitch : public switch_::Switch, public Component, public Parented<S
       case DimmerSwitchType::LIMIT_CORRECT:
         params.limit_correct = state;
         break;
+      case DimmerSwitchType::ALLOW_OVERWRITE_STOCK:
+        break;  // handled by the early return above; not an engine parameter
     }
     this->publish_state(state);
   }

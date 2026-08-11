@@ -216,6 +216,16 @@ switch:
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: limit_correct
     name: "Limit Correct"
+  # SAFETY: after the first flash, the OTHER app slot still holds stock Shelly
+  # firmware -- the only way back on a device with no USB. A routine wireless
+  # update targets exactly that slot, so the firmware REFUSES such an OTA until
+  # this is turned on. Flip it once, in HA, when you accept losing the ability
+  # to revert to stock; it persists across reboots and is irrelevant afterwards
+  # (once overwritten, no stock image exists to protect). See README.
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: allow_overwrite_stock
+    name: "Allow Overwrite Stock"
 
 sensor:
   - platform: shelly_wall_dimmer

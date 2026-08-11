@@ -92,6 +92,19 @@ Getting stock back after that would need one of:
 
 If you want a real fallback, keep a copy of your dimmer's original OTA package before you flash the second time, and don't treat "auto-revert" as "uninstall."
 
+**The firmware makes this a deliberate choice rather than an accident.** An ESPHome OTA writes to the *other* app slot — the one still holding stock — so the first routine wireless update after conversion would silently consume your only way back. Instead, the firmware **refuses that OTA** and tells you why:
+
+```
+OTA REFUSED: target slot at 0x200000 still holds the stock Shelly firmware
+(project "PlusWallDimmer", version "2.0.0") -- your only rollback on a device
+with no USB. Turn on the "Allow Overwrite Stock" switch in Home Assistant to
+proceed. This is irreversible...
+```
+
+To go ahead, flip **Allow Overwrite Stock** on the device page in HA (under *Configuration*), then update as normal. It persists across reboots — set once and forget — and becomes irrelevant afterwards, since once that slot is overwritten there is no stock image left to protect. The check is enforced at `esp_ota_begin`, i.e. *before* the erase, so a refused update leaves the stock image completely untouched. A blank or unreadable slot is never protected.
+
+This is deliberately the one thing standing between you and a routine update: it costs one toggle, once, in exchange for not discovering later that your rollback quietly disappeared.
+
 ---
 
 ## Configuration
@@ -145,6 +158,7 @@ All `config`-category.
 | `ramp_on_change` | on | Ramp (not jump) on a brightness change while already on. |
 | `ramp_on_off` | off | Fade in on turn-on, fade out on turn-off. |
 | `limit_correct` | off | If the touch panel drives outside `[min,max]`, ramp back to the limit (best-effort — reacts after the fact). |
+| `allow_overwrite_stock` | off | Permit an OTA to erase the slot still holding stock firmware. **Persists across reboots.** Until you turn this on, wireless updates that would destroy your rollback are refused — see [Getting back to stock](#getting-back-to-stock-untested). |
 
 **Kick + ramp together:** with `kick_enabled`, every turn-on from off snaps to `kick_level` (below it the bulb's dark anyway), then reaches the target — dwell + ramp **down** if the target is below `kick_level`, ramp **up** with no dwell if above. With kick off, a turn-on jumps straight to target, or fades in from 0 if `ramp_on_off`.
 

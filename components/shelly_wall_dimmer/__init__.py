@@ -270,6 +270,11 @@ async def to_code(config):
     #      mark_app_valid_cancel_rollback (begin + boot) -> hard no-op
     cg.add_build_flag("-Wl,--wrap=esp_ota_set_boot_partition")
     cg.add_build_flag("-Wl,--wrap=esp_ota_mark_app_valid_cancel_rollback")
+    # 5. Protect the stock rollback image: esp_ota_begin is what ERASES the
+    #    target slot, so that is where an OTA aimed at the still-stock slot has
+    #    to be refused (see dfu_wrap.cpp). Gated at runtime by the
+    #    `allow_overwrite_stock` switch.
+    cg.add_build_flag("-Wl,--wrap=esp_ota_begin")
 
     # ---- optional bridge-package build (post-build hook) --------------------
     # When the user opts in, wire shelly_pkg.py in as a PlatformIO post-build

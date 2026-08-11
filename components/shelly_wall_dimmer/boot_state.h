@@ -42,6 +42,28 @@
 
 namespace shelly_dimmer_core {
 
+// ---- OTA policy: protect the stock rollback image -------------------------
+// This device has two app slots and no USB. After the first flash, one slot
+// runs this firmware and the OTHER still holds Shelly's stock image -- the only
+// way back. A routine ESPHome OTA targets that other slot, so the FIRST wireless
+// update after conversion silently destroys the rollback path.
+//
+// dfu_wrap.cpp refuses to let an OTA erase a slot that still holds stock unless
+// this flag is set, turning "silently gone" into one deliberate decision. It is
+// runtime state rather than a build-time option on purpose: the check is
+// enforced by the firmware ALREADY RUNNING, so a YAML flag would be circular
+// (you would need an OTA to enable the OTA). The `allow_overwrite_stock` switch
+// writes it, and persists across reboots so it is set-once-and-forget.
+//
+// Defaults to false: protect until told otherwise.
+inline bool g_allow_overwrite_stock = false;
+
+// esp_app_desc_t.project_name carried by Shelly's stock firmware. Confirmed on
+// a real 2.0.0 image booted under QEMU ("app_init: Project name: PlusWallDimmer").
+// Matching the known stock name -- rather than "anything that isn't us" -- means
+// renaming your own `project:` can't lock you out of your own updates.
+inline constexpr const char *STOCK_PROJECT_NAME = "PlusWallDimmer";
+
 // ---- record geometry (offsets within the 512-byte SH0S record) ----
 static constexpr uint32_t SHOS_COPY0 = 0x0000;  // otadata copy A
 static constexpr uint32_t SHOS_COPY1 = 0x1000;  // otadata copy B

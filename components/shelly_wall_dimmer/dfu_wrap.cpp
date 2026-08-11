@@ -29,6 +29,7 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_err.h>
+#include <cstring>
 
 #include "esphome/core/log.h"
 #include "boot_state.h"
@@ -44,6 +45,57 @@ int slot_for_addr(uint32_t addr) {
   return -1;
 }
 }  // namespace
+
+// Refuse to let an OTA erase the slot that still holds Shelly's stock firmware.
+// ---------------------------------------------------------------------------
+// This MUST hook esp_ota_begin, not esp_ota_set_boot_partition: begin is what
+// ERASES the destination region (ESPHome's own backend notes this), so by the
+// time set_boot_partition runs the stock image is already gone and refusing
+// there would only stop us BOOTING the new one -- the rollback target would be
+// destroyed either way.
+//
+// Policy: if the target slot currently holds an image whose project name is
+// Shelly's, that slot is your only way back on a device with no USB. Refuse
+// unless the `allow_overwrite_stock` switch has been turned on. A slot that is
+// blank or unreadable carries no rollback image, so it is fair game.
+//
+// Consequence, by design: after conversion, EVERY routine wireless update
+// targets the stock slot and is refused until you flip that switch once. That
+// converts "your next update silently burns the rollback" into a single
+// deliberate, informed choice. Once the slot is overwritten, no stock image
+// exists anywhere and this check never fires again.
+extern "C" esp_err_t __real_esp_ota_begin(const esp_partition_t *partition, size_t image_size,
+                                          esp_ota_handle_t *out_handle);
+
+extern "C" esp_err_t __wrap_esp_ota_begin(const esp_partition_t *partition, size_t image_size,
+                                          esp_ota_handle_t *out_handle) {
+  if (partition != nullptr && !::shelly_dimmer_core::g_allow_overwrite_stock) {
+    esp_app_desc_t desc{};
+    if (esp_ota_get_partition_description(partition, &desc) == ESP_OK) {
+      desc.project_name[sizeof(desc.project_name) - 1] = '\0';
+      if (strcmp(desc.project_name, ::shelly_dimmer_core::STOCK_PROJECT_NAME) == 0) {
+        ESP_LOGE(DFU_TAG,
+                 "OTA REFUSED: target slot at 0x%06x still holds the stock Shelly firmware "
+                 "(project \"%s\", version \"%s\") -- your only rollback on a device with no "
+                 "USB. Turn on the \"Allow Overwrite Stock\" switch in Home Assistant to "
+                 "proceed. This is irreversible: it permanently removes the ability to go "
+                 "back to stock.",
+                 (unsigned) partition->address, desc.project_name, desc.version);
+        return ESP_ERR_NOT_ALLOWED;
+      }
+      ESP_LOGD(DFU_TAG, "OTA target 0x%06x holds project \"%s\" (not stock) -- allowed",
+               (unsigned) partition->address, desc.project_name);
+    } else {
+      // No readable descriptor: blank/garbage slot, nothing to protect.
+      ESP_LOGD(DFU_TAG, "OTA target 0x%06x has no readable app descriptor -- allowed",
+               (unsigned) partition->address);
+    }
+  } else if (partition != nullptr) {
+    ESP_LOGW(DFU_TAG, "OTA target 0x%06x: stock-overwrite protection DISABLED by switch",
+             (unsigned) partition->address);
+  }
+  return __real_esp_ota_begin(partition, image_size, out_handle);
+}
 
 // C linkage: --wrap redirects the C symbol esp_ota_set_boot_partition here.
 extern "C" esp_err_t __wrap_esp_ota_set_boot_partition(const esp_partition_t *partition) {
