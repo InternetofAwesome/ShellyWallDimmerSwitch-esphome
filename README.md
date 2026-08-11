@@ -153,7 +153,17 @@ Brightness-only; needs `shelly_wall_dimmer_id`. The example sets `gamma_correct:
 
 ### Numbers — `platform: shelly_wall_dimmer`, pick with `type:`
 
-All `config`-category.
+All `config`-category. **Every value below persists** — see [What persists](#what-persists) for the full picture. The "Default" column is the *first-boot* value; override it per entity with `initial_value:`, which is checked against the range at build time:
+
+```yaml
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: kick_level
+    name: "Kick Level"
+    initial_value: 35     # first boot only; ignored once a value is stored
+```
+
+The example config spells all of these out so they can be tuned before the first flash.
 
 | `type` | Range | Default | What |
 |---|---|---|---|
@@ -171,15 +181,46 @@ All `config`-category.
 
 ### Switches — `platform: shelly_wall_dimmer`, pick with `type:`
 
+Persist the same way the numbers do. Switches take their first-boot value from the standard `restore_mode:` key rather than `initial_value:` — each defaults to `RESTORE_DEFAULT_ON`/`_OFF` per the table below. Set `restore_mode: ALWAYS_ON`/`ALWAYS_OFF` on an entity to pin it at every boot and opt out of persistence entirely.
+
 | `type` | Default | What |
 |---|---|---|
 | `kick_enabled` | on | Snap to `kick_level` on turn-on. |
 | `ramp_on_change` | on | Ramp (not jump) on a brightness change while already on. |
 | `ramp_on_off` | off | Fade in on turn-on, fade out on turn-off. |
 | `limit_correct` | off | If the touch panel drives outside `[min,max]`, ramp back to the limit (best-effort — reacts after the fact). |
-| `allow_overwrite_stock` | off | Permit an OTA to erase the slot still holding stock firmware. **Persists across reboots.** Until you turn this on, wireless updates that would destroy your rollback are refused — see [Getting back to stock](#getting-back-to-stock-untested). |
+| `allow_overwrite_stock` | off | Permit an OTA to erase the slot still holding stock firmware. Until you turn this on, wireless updates that would destroy your rollback are refused — see [Getting back to stock](#getting-back-to-stock-untested). |
 
 **Kick + ramp together:** with `kick_enabled`, every turn-on from off snaps to `kick_level` (below it the bulb's dark anyway), then reaches the target — dwell + ramp **down** if the target is below `kick_level`, ramp **up** with no dwell if above. With kick off, a turn-on jumps straight to target, or fades in from 0 if `ramp_on_off`.
+
+### What persists
+
+Everything persisted lives in the **`nvs` partition at `0x9000`, 16 KB** — Shelly's, not ours. This firmware ships app-only, so neither the first flash nor any later OTA touches it. Writes are batched and flushed every 60 s and on a clean reboot/OTA (`preferences: flash_write_interval:` to change that).
+
+Persisted by this component — the key is a hash of the entity's **object ID**, so renaming an entity orphans its stored value and it reverts to the first-boot default:
+
+| Entity | Stored | First-boot value from |
+|---|---|---|
+| `number` × 5 (`kick_level`, `kick_dwell_ms`, `min_brightness`, `max_brightness`, `ramp_rate`) | last value set | `initial_value:` |
+| `switch` × 4 (`kick_enabled`, `ramp_on_change`, `ramp_on_off`, `limit_correct`) | last state | `restore_mode:` |
+| `switch` `allow_overwrite_stock` | last state | `restore_mode:` (default off) |
+
+Also in that same 16 KB, from stock ESPHome components in the example config:
+
+| Source | Stored | When |
+|---|---|---|
+| `light` Power LED, `light` WiFi LED | on/off + brightness | `restore_mode: RESTORE_DEFAULT_ON` |
+| `safe_mode` | boot-attempt counter | every boot, cleared 60 s later |
+| `wifi` | SSID/PSK | only if set via captive portal or Improv — YAML credentials are compiled in, not stored |
+| `api` | noise encryption key | only if changed at runtime rather than in YAML |
+
+**Not** persisted: the `Light` entity itself (`restore_mode: ALWAYS_OFF`, and the point is moot — the co-processor reports its own on/off + brightness at boot and the light entity syncs to that), the temperature sensor, both text sensors, the front button, and `wifi` fast-connect data (`fast_connect: false`).
+
+Three things do wipe stored values:
+
+- A **full-erase serial flash** (`esptool erase_flash`). Normal OTAs never do this.
+- **Reverting to stock via a full factory package** — Shelly's own manifest marks `nvs` as fill-`0xFF`.
+- **A failed `nvs_open`** — if the partition is exhausted, ESPHome erases the *whole* partition to recover, which also destroys whatever stock left in there. Config only: the erase is bounded to `0x9000`–`0xD000`, and nothing that boots this device lives there. The bootloader reads the partition table, otadata (`0xD000`, the SH0S boot state), and the app slots — its only NVS mention is a subtype *label* in the table-dump string list. Shelly's factory data sits in its own `shelly` NVS partition at `0x3FC000` (`nvs_flash_init_partition(shelly)` / `shelly_factory_data_nvs.cpp`), untouched. `allow_overwrite_stock` fails safe here, reverting to off. This one is the reason the boot log prints `NVS: <used>/<total> entries used, <free> free` from `dump_config()`: on this device that space is shared with stock's leftovers and is not something a normal ESPHome build has to worry about. If free entries are in the single digits, clear it deliberately (serial erase, or `Sys.FactoryReset` from stock before converting) rather than waiting for the automatic wipe.
 
 ### Sensors
 

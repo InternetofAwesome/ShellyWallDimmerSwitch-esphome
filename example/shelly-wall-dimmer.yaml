@@ -154,6 +154,14 @@ light:
     default_transition_length: 0s
     restore_mode: RESTORE_DEFAULT_ON
 
+# EVERY knob below is stored in NVS the moment you change it in HA, and restored
+# on the next boot -- including across an OTA, which rewrites only the app
+# partition. So `initial_value:` / `restore_mode:` here are FIRST-BOOT values:
+# they apply to a device that has never had that entity's value stored (a fresh
+# flash, or after a full-erase serial flash), and are ignored on every boot
+# after that. To re-apply one, change it in HA -- editing this file will not
+# override a stored value. Values shown are the component's own defaults, spelled
+# out so they are easy to tune before the first flash. Full list: README.
 number:
   # kick_level is the single pivot: the lowest % the bulb reliably lights at.
   # Turn-on snaps here, then dwells+ramps down (below) or ramps up (above).
@@ -161,48 +169,61 @@ number:
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: kick_level
     name: "Kick Level"
+    initial_value: 20      # 0-100 %
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: kick_dwell_ms
     name: "Kick Dwell"
+    initial_value: 150     # 0-2000 ms
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: min_brightness
     name: "Min Brightness"
+    initial_value: 1       # 0-100 %
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: max_brightness
     name: "Max Brightness"
+    initial_value: 100     # 0-100 %
   # Single shared ramp rate in %/second, used by every ramp (on-change, on/off
   # fade, and limit correction). The firmware quantizes it to a step cadence.
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: ramp_rate
     name: "Ramp Rate"
+    initial_value: 150     # 1-1000 %/s
   # (The optional `raw_tx_byte` diagnostic number belongs here -- see
   # "RAW-SEND PROTOCOL TOOL" near the bottom of this file for both halves.)
 
+# Switches take their first-boot value from `restore_mode:` (the standard
+# ESPHome key) rather than `initial_value:` -- RESTORE_DEFAULT_ON/OFF means
+# "restore what's stored, or this if nothing is". Use ALWAYS_ON / ALWAYS_OFF
+# instead to pin one at every boot and opt out of persistence entirely.
 switch:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: kick_enabled
     name: "Kick Enabled"
+    restore_mode: RESTORE_DEFAULT_ON
   # Ramp on a brightness change while already on (default on).
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: ramp_on_change
     name: "Ramp On Change"
+    restore_mode: RESTORE_DEFAULT_ON
   # Fade in on turn-on / fade out on turn-off, instead of jumping (default off).
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: ramp_on_off
     name: "Fade In-Out"
+    restore_mode: RESTORE_DEFAULT_OFF
   # If the physical touch panel drives brightness outside the min/max window,
   # ramp back to the nearest limit (default off; see the touch caveat in README).
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: limit_correct
     name: "Limit Correct"
+    restore_mode: RESTORE_DEFAULT_OFF
   # SAFETY: after the first flash, the OTHER app slot still holds stock Shelly
   # firmware -- the only way back on a device with no USB. A routine wireless
   # update targets exactly that slot, so the firmware REFUSES such an OTA until
@@ -213,6 +234,7 @@ switch:
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: allow_overwrite_stock
     name: "Allow Overwrite Stock"
+    restore_mode: RESTORE_DEFAULT_OFF
 
 sensor:
   - platform: shelly_wall_dimmer

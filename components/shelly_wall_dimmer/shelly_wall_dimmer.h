@@ -6,6 +6,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
+#include "esphome/core/preferences.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/light/light_output.h"
 #include "esphome/components/number/number.h"
@@ -283,12 +284,26 @@ class DimmerLight : public light::LightOutput, public Parented<ShellyWallDimmer>
 class DimmerNumber : public number::Number, public Component, public Parented<ShellyWallDimmer> {
  public:
   void set_type(DimmerNumberType type) { this->type_ = type; }
+  // First-boot fallback: the per-type default from number.py's TYPES table.
+  void set_initial_value(float value) { this->initial_value_ = value; }
 
   void setup() override {
-    // Prime the engine's param from the entity's boot-time value (the YAML
-    // default, published explicitly by number.py's to_code()) so the
-    // kick/ramp state machine and the HA-visible number agree from t=0.
-    this->control(this->state);
+    // These knobs are tuned once and expected to stay tuned, so the last value
+    // set from HA lives in NVS and survives reboots AND firmware updates (an
+    // OTA rewrites only the app partition). The YAML default applies only when
+    // nothing is stored yet -- i.e. a first flash or an erased NVS.
+    this->pref_ = this->make_entity_preference<float>();
+    float value = this->initial_value_;
+    float restored;
+    if (this->pref_.load(&restored) && restored >= this->traits.get_min_value() &&
+        restored <= this->traits.get_max_value()) {
+      // Range-checked: a stored value from an older build whose TYPES range has
+      // since shrunk would otherwise push an out-of-range param into the engine.
+      value = restored;
+    }
+    // Prime the engine's param from that value and publish it, so the kick/ramp
+    // state machine and the HA-visible number agree from t=0.
+    this->control(value);
   }
 
  protected:
@@ -312,9 +327,14 @@ class DimmerNumber : public number::Number, public Component, public Parented<Sh
         break;
     }
     this->publish_state(value);
+    // Unchanged values are dropped by the NVS backend, so re-saving the boot
+    // value from setup() costs no flash wear.
+    this->pref_.save(&value);
   }
 
   DimmerNumberType type_{DimmerNumberType::KICK_LEVEL};
+  float initial_value_{0.0f};
+  ESPPreferenceObject pref_;
 };
 
 // ---- engine toggle switches (kick + the three ramp gates) ------------------
@@ -323,15 +343,12 @@ class DimmerSwitch : public switch_::Switch, public Component, public Parented<S
   void set_type(DimmerSwitchType type) { this->type_ = type; }
 
   void setup() override {
-    if (this->type_ == DimmerSwitchType::ALLOW_OVERWRITE_STOCK) {
-      // This one must survive reboots -- it is a standing permission, not a
-      // tuning knob, so honour the restore mode instead of a YAML default.
-      this->write_state(this->get_initial_state_with_restore_mode().value_or(false));
-      return;
-    }
-    // Prime the engine from the switch's boot-time (restored or YAML
-    // default) state, mirroring DimmerNumber::setup().
-    this->write_state(this->state);
+    // Every switch here restores from NVS: the engine gates are tuning knobs
+    // that must survive an update, and allow_overwrite_stock is a standing
+    // permission. switch.py picks each one's RESTORE_DEFAULT_{ON,OFF} so an
+    // unwritten preference falls back to the documented default. Writing the
+    // state also primes the engine (see write_state below).
+    this->write_state(this->get_initial_state_with_restore_mode().value_or(false));
   }
 
  protected:
