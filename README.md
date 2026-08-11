@@ -80,6 +80,25 @@ Nothing else: no cable, no USB-serial adapter, no disassembly.
 
 ---
 
+## Converting more switches
+
+**Don't copy a working device's YAML.** It's the obvious move and it quietly couples the two devices. Repeat step 1 instead — **Builder → `+ NEW DEVICE`** — so the wizard mints this device its own API key and OTA password, paste the example over it as before, and then carry across **only your tuned values** (kick level/dwell, ramp rate, min/max, LED brightness).
+
+Never carry across:
+
+| Don't copy | Why |
+|---|---|
+| `ota: password:` | Distinct passwords are an **interlock**: aim an install at the wrong device and it *fails*. Share them and a mis-aimed wireless install silently succeeds, flashing one switch with another's firmware — it then comes up claiming the wrong name and Home Assistant gets very confused. |
+| `api: encryption: key:` | Two devices answering to one key invites identity mix-ups during discovery. |
+| `name:` / `friendly_name:` | Duplicate names collide on mDNS, and the Builder can end up talking to whichever answers first. |
+| `bridge_package: push_to:` | Must be the **new** switch's IP. Left pointing at an already-converted one it just fails (that device no longer speaks `Shelly.Update`), so nothing gets flashed and it isn't obvious why. |
+
+Each switch keeps its **own** stock image in its own spare slot, with its own **Allow Overwrite Stock** switch, default off — converting one has no effect on another's rollback. And comment out `bridge_package:` once a switch is converted, as in step 7.
+
+> Right after a conversion, Home Assistant may log `Invalid encryption key` for the new device once or twice. That's expected while it finishes rebooting into the new firmware — HA is still holding the key from before the flash. It clears on its own; if it persists, the key really is mismatched.
+
+---
+
 ## Getting back to stock (untested)
 
 Be clear-eyed about what "fail safe" covers here: **updates** are safe (bad build → auto-revert to the other slot), but **restoring stock** is a different claim we haven't proven.
