@@ -1,5 +1,8 @@
 #include "shelly_wall_dimmer.h"
 
+#include <nvs.h>
+#include <nvs_flash.h>
+
 namespace esphome::shelly_wall_dimmer {
 
 static const char *const TAG = "shelly_wall_dimmer";
@@ -185,6 +188,20 @@ void ShellyWallDimmer::dump_config() {
   ESP_LOGCONFIG(TAG, "  Boot-state writes (commit/revert/DFU): %s",
                 this->boot_state_layout_ok_ ? "ENABLED (layout guard OK)"
                                             : "DISABLED (partition layout guard FAILED)");
+  // NVS headroom. Unlike a normal ESPHome device, this firmware arrives by OTA
+  // into Shelly's partition table and inherits Shelly's `nvs` -- only 16 KB, and
+  // still holding whatever stock wrote there (it is never erased on our path).
+  // Every persisted setting lives in that same partition, and if nvs_open() ever
+  // fails ESPHome erases the WHOLE partition to recover -- taking stock's own
+  // config with it. Log the numbers so a nearly-full NVS is visible before that
+  // happens rather than after.
+  nvs_stats_t stats{};
+  if (nvs_get_stats(nullptr, &stats) == ESP_OK) {
+    ESP_LOGCONFIG(TAG, "  NVS: %zu/%zu entries used, %zu free (%zu namespaces)", stats.used_entries,
+                  stats.total_entries, stats.free_entries, stats.namespace_count);
+  } else {
+    ESP_LOGW(TAG, "  NVS: stats unavailable -- persisted settings may not be saving");
+  }
   this->check_uart_settings(115200);
 }
 
