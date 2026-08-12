@@ -36,6 +36,14 @@ CONF_SHELLY_WALL_DIMMER_ID = "shelly_wall_dimmer_id"
 CONF_BRIDGE_PACKAGE = "bridge_package"
 CONF_PUSH_TO = "push_to"
 
+# Bench/sweep mode. When true the ESP is electrically MUTE on the MCU link
+# (tx_byte_() drops every outbound byte) so an external USB-UART adapter can
+# own the bus without contention. Pair it with an rx-only `uart:` (tx_pin
+# omitted) so the TX GPIO is never configured / stays high-Z -- that is why
+# FINAL_VALIDATE drops require_tx when this is set. RX stays wired so the ESP
+# still logs the MCU's frames as a cross-check. See shelly_wall_dimmer.h.
+CONF_SILENT = "silent"
+
 BRIDGE_PACKAGE_SCHEMA = cv.Schema(
     {
         # Device IP (or hostname) to push the finished package to via
@@ -50,6 +58,7 @@ CONFIG_SCHEMA = (
             cv.GenerateID(): cv.declare_id(ShellyWallDimmer),
             cv.Optional(CONF_UPDATE_INTERVAL, default="1s"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_BRIDGE_PACKAGE): BRIDGE_PACKAGE_SCHEMA,
+            cv.Optional(CONF_SILENT, default=False): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -222,15 +231,24 @@ def _validate_bridge_toolchain(config):
 # Enforces the protocol's fixed 115200 8N1 and that both directions are wired
 # -- catches a bad `uart:` block at config-validate time instead of a silent
 # runtime hang. See PROTOCOL.md. Composed with the bridge/toolchain check above.
-FINAL_VALIDATE_SCHEMA = cv.All(
-    _validate_bridge_upload,
-    _validate_bridge_toolchain,
-    uart.final_validate_device_schema(
+def _validate_uart_directions(config):
+    # In silent/bench mode the ESP must NOT drive TX, so the `uart:` bus is
+    # rx-only (tx_pin omitted) and require_tx is dropped -- otherwise this guard
+    # would (correctly, for normal use) reject the missing TX. RX stays required
+    # so the ESP can still hear and log the MCU. Baud is fixed either way.
+    require_tx = not config.get(CONF_SILENT, False)
+    return uart.final_validate_device_schema(
         "shelly_wall_dimmer",
         baud_rate=115200,
         require_rx=True,
-        require_tx=True,
-    ),
+        require_tx=require_tx,
+    )(config)
+
+
+FINAL_VALIDATE_SCHEMA = cv.All(
+    _validate_bridge_upload,
+    _validate_bridge_toolchain,
+    _validate_uart_directions,
 )
 
 
@@ -240,6 +258,7 @@ async def to_code(config):
     await uart.register_uart_device(var, config)
 
     cg.add(var.set_update_interval(config[CONF_UPDATE_INTERVAL]))
+    cg.add(var.set_silent(config[CONF_SILENT]))
 
     # ---- Shelly-bootloader requirements, injected here so the device YAML stays
     # a plain ESPHome config (no partitions:/sdkconfig_options:/advanced: needed).

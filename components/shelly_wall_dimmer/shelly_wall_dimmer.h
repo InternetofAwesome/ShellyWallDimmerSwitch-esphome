@@ -59,6 +59,14 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   // temperature/state stay fresh even with no touch/HA activity.
   void set_update_interval(uint32_t update_interval_ms) { this->update_interval_ms_ = update_interval_ms; }
 
+  // Bench/sweep mode: the ESP must be ELECTRICALLY MUTE on the MCU link so an
+  // external USB-UART adapter can own it without bus contention. The device
+  // YAML pairs this with an rx-only `uart:` (tx_pin omitted), which leaves the
+  // TX GPIO unconfigured / high-Z -- see __init__.py's FINAL_VALIDATE, which
+  // drops require_tx when silent. RX/parsing stays live so the ESP still logs
+  // the MCU's frames as a cross-check.
+  void set_silent(bool silent) { this->silent_ = silent; }
+
   // ---- entity plumbing (called from each platform's to_code()) ----
   void set_light_state(light::LightState *state) { this->light_state_ = state; }
   void set_temperature_sensor(sensor::Sensor *s) { this->temperature_sensor_ = s; }
@@ -84,7 +92,7 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
 
   // ---- diagnostics: arbitrary raw byte out, for sweeping the unused
   // command space (PROTOCOL.md: 0x65-0x7F / 0xE5-0xFE) from HA, no reflash ----
-  void send_raw(uint8_t b) { this->write_byte(b); }
+  void send_raw(uint8_t b) { this->tx_byte_(b); }
 
   // Diagnostic for Option B (boot-state RE): dump the raw otadata partition so
   // we can derive the record layout + checksum from real bytes in a known
@@ -149,7 +157,15 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   // a void* context (they're framework-agnostic, no std::function), so we
   // bounce back into member functions here.
   static void send_byte_trampoline_(uint8_t b, void *ctx) {
-    reinterpret_cast<ShellyWallDimmer *>(ctx)->write_byte(b);
+    reinterpret_cast<ShellyWallDimmer *>(ctx)->tx_byte_(b);
+  }
+
+  // Single outbound choke point. In silent/bench mode every ESP-originated byte
+  // (poll, engine command, raw diagnostic) is dropped here so the ESP never
+  // drives the link; an external adapter owns it. RX is unaffected.
+  void tx_byte_(uint8_t b) {
+    if (this->silent_) return;
+    this->write_byte(b);
   }
   static void stray_byte_trampoline_(uint8_t b, void *ctx) {
     reinterpret_cast<ShellyWallDimmer *>(ctx)->handle_stray_byte_(b);
@@ -176,6 +192,10 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
 
   uint32_t update_interval_ms_{1000};
   uint32_t last_poll_ms_{0};
+
+  // Bench/sweep mode -- see set_silent(). When true, tx_byte_() drops every
+  // outbound byte so the ESP is electrically mute on the MCU link.
+  bool silent_{false};
 
   // Edge-detect cache so we only push a light update to HA on genuine
   // device-side change (manual override / our own settled command), not on

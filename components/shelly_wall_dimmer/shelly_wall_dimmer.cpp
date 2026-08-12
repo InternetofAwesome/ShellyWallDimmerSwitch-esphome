@@ -24,8 +24,9 @@ void ShellyWallDimmer::setup() {
   }
 
   // Kick off with a poll so we learn the co-processor's current state fast,
-  // rather than waiting for it to spontaneously stream something.
-  this->write_byte(::shelly_dimmer_core::CMD_POLL);
+  // rather than waiting for it to spontaneously stream something. tx_byte_()
+  // drops this in silent/bench mode (the ESP stays mute; an adapter polls).
+  this->tx_byte_(::shelly_dimmer_core::CMD_POLL);
   this->last_poll_ms_ = millis();
 }
 
@@ -46,7 +47,7 @@ void ShellyWallDimmer::loop() {
 
   if (now - this->last_poll_ms_ >= this->update_interval_ms_) {
     this->last_poll_ms_ = now;
-    this->write_byte(::shelly_dimmer_core::CMD_POLL);
+    this->tx_byte_(::shelly_dimmer_core::CMD_POLL);
   }
 
   this->maybe_autocommit_();
@@ -184,6 +185,9 @@ void ShellyWallDimmer::dump_config() {
   ESP_LOGCONFIG(TAG, "  Ramp: %u%%/s (on-change:%s on/off:%s limit-correct:%s)",
                 (unsigned) params.ramp_rate, ONOFF(params.ramp_on_change),
                 ONOFF(params.ramp_on_off), ONOFF(params.limit_correct));
+  if (this->silent_) {
+    ESP_LOGCONFIG(TAG, "  UART TX: SILENT (bench mode) -- ESP will NOT drive the MCU link");
+  }
   ESP_LOGCONFIG(TAG, "  Status poll interval: %ums", (unsigned) this->update_interval_ms_);
   ESP_LOGCONFIG(TAG, "  Boot-state writes (commit/revert/DFU): %s",
                 this->boot_state_layout_ok_ ? "ENABLED (layout guard OK)"
