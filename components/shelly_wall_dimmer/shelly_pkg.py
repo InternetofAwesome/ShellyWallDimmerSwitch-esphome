@@ -71,6 +71,25 @@ def _build_package(app, out_zip):
         print(f"!! shelly-bridge: app version is '{version}' -- stock OTA dedupes on this. "
               f"Set the `fw_version` substitution to something unique per build.")
 
+    # Two different "names" are in play and only one of them is ours to choose:
+    #   * the MANIFEST name below is APP_NAME, hardcoded to stock's expected
+    #     value -- stock's OTA rejects anything else ("Wrong app name").
+    #   * esp_app_desc.project_name (read here as `project`) comes from the
+    #     ESPHome node name and is baked into the image.
+    # The runtime stock-overwrite guard (dfu_wrap.cpp) keys on the SECOND one: it
+    # reads the OTHER app slot's descriptor and refuses to erase it if the name
+    # matches stock's. If this build's project_name happens to equal the stock
+    # name, then after conversion that guard inspects OUR firmware, concludes it
+    # is stock, and refuses every wireless update until the user turns the
+    # protection off -- at which point it never protects anything again. Cheap to
+    # catch here, since the value has already been parsed.
+    if project == APP_NAME:
+        print(f"!! shelly-bridge: this build's esp_app_desc.project_name is '{project}', "
+              f"the same name stock uses. The stock-overwrite guard identifies the "
+              f"rollback image by that name, so it will mistake THIS firmware for "
+              f"stock in the other slot and refuse later OTA updates. Rename the "
+              f"ESPHome node (the `name:` key) to something else.")
+
     # APP ONLY -- deliberately. Do NOT add "pt" or "fs" parts back without
     # reading this:
     #
