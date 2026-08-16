@@ -381,6 +381,39 @@ def apply_manifest_to_flash(image, zip_path, manifest, layout, app_slot):
                     place(image, data, start)
 
 
+def _qemu_serial_run(qemu, flash, tmp, tag, timeout=40):
+    """Boot `flash` and return the guest serial log.
+
+    Serial goes to a FILE, never stdio. `-nographic` binds the guest UART to
+    QEMU's own stdin/stdout, which makes output depend on the caller's stdio /
+    TTY arrangement -- the same invocation yields a full boot log from one shell
+    and ZERO bytes from another. `-display none -serial file:` plus a detached
+    stdin is identical in every environment (measured byte-identical across
+    stdin/stdout arrangements). QEMU's own output is appended separately so a
+    process-level failure is never silently empty.
+    """
+    slog = os.path.join(tmp, f"serial_{tag}.log")
+    proc_out = ""
+    try:
+        proc = subprocess.run(
+            [qemu, "-machine", "esp32",
+             "-drive", f"file={flash},if=mtd,format=raw", "-no-reboot",
+             "-display", "none", "-serial", f"file:{slog}"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+        )
+        proc_out = (proc.stdout or "") + (proc.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        proc_out = ((e.stdout or b"").decode("latin1", "replace")
+                    + (e.stderr or b"").decode("latin1", "replace"))
+    log = ""
+    if os.path.exists(slog):
+        with open(slog, "r", errors="replace") as f:
+            log = f.read()
+    if not log.strip():
+        log += "\n[no guest serial output; qemu said] " + proc_out.strip()
+    return log
+
+
 def test_qemu_boot_preserves_fallback():
     print("[B] QEMU: apply package to a 2.0.0-layout flash, boot, verify fallback")
     fw_dir = os.environ.get("SHELLY_FW_DIR")
@@ -403,7 +436,7 @@ def test_qemu_boot_preserves_fallback():
         skip(f"missing in SHELLY_FW_DIR: {', '.join(os.path.basename(m) for m in missing)}")
         return
     if not app_bin or not os.path.exists(app_bin):
-        skip("SHELLY_APP_BIN not set to a built ESPHome firmware.bin")
+        skip("SHELLY_APP_BIN not set -- this layer boots YOUR compiled image, so it\n         needs one. Build once, then:\n         SHELLY_APP_BIN=<build>/.pioenvs/<name>/firmware.bin make bridge")
         return
 
     layout = STOCK_LAYOUTS["2.0.0"]
@@ -439,15 +472,7 @@ def test_qemu_boot_preserves_fallback():
         with open(flash, "wb") as f:
             f.write(image)
 
-        try:
-            proc = subprocess.run(
-                [qemu, "-nographic", "-machine", "esp32",
-                 "-drive", f"file={flash},if=mtd,format=raw", "-no-reboot"],
-                capture_output=True, text=True, timeout=40,
-            )
-            log = proc.stdout + proc.stderr
-        except subprocess.TimeoutExpired as e:
-            log = (e.stdout or b"").decode("latin1") + (e.stderr or b"").decode("latin1")
+        log = _qemu_serial_run(qemu, flash, tmp, "fallback")
 
         # The bootloader must still run and reach a boot decision. (The app then
         # panics in QEMU at radio init -- there is no WiFi peripheral to
@@ -480,15 +505,7 @@ def test_qemu_boot_preserves_fallback():
         flash2 = os.path.join(tmp, "flash_target.bin")
         with open(flash2, "wb") as f:
             f.write(image2)
-        try:
-            proc2 = subprocess.run(
-                [qemu, "-nographic", "-machine", "esp32",
-                 "-drive", f"file={flash2},if=mtd,format=raw", "-no-reboot"],
-                capture_output=True, text=True, timeout=40,
-            )
-            log2 = proc2.stdout + proc2.stderr
-        except subprocess.TimeoutExpired as e:
-            log2 = (e.stdout or b"").decode("latin1") + (e.stderr or b"").decode("latin1")
+        log2 = _qemu_serial_run(qemu, flash2, tmp, "target")
 
         tgt_start = layout["app_1"][0]
         check(f"offset 0x{tgt_start:x}" in log2,
@@ -562,7 +579,7 @@ def main():
     test_package_never_touches_fallback()
     test_our_layout_would_not_shrink_stock_slots()
     test_qemu_boot_preserves_fallback()
-    print(f"\n{_passed} passed, {_failed} failed, {_skipped} skipped")
+    print(f"\n[bridge-package] {_passed} passed, {_failed} failed, {_skipped} skipped")
     return 1 if _failed else 0
 
 
