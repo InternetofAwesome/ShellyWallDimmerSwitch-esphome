@@ -1,7 +1,7 @@
 # Example device config for the Shelly Plus Wall Dimmer custom firmware.
 # Validate with (do NOT `esphome compile` -- that pulls a multi-GB toolchain):
 #   source /home/sam/shelly/esphome-venv/bin/activate
-#   esphome config /home/sam/shelly/component/example/shelly-wall-dimmer.yaml
+#   esphome config example/shelly-wall-dimmer.yaml
 
 substitutions:
   name: shelly-wall-dimmer
@@ -29,18 +29,19 @@ esphome:
     name: "sam.shelly_wall_dimmer"
     version: "${fw_version}"
 
-# Local (not github://) source so this validates against the checked-out
-# component code, not a published release.
 external_components:
-  # Tracking master for now. When you cut a release, change ref: to the tag
-  # (e.g. ref: v1.0.0) and raise refresh so builds pin to it. refresh: 0s =
-  # always re-fetch latest master (so a local build after `git push` picks it
-  # up); for offline/local dev, swap back to {type: local, path: ../components}.
+  # PINNED TO A RELEASE TAG. A tag is immutable, so builds are reproducible and
+  # a push to master can never change what your wall switch runs. Bump this
+  # deliberately when you want a new version.
+  #
+  # To track development instead, use `ref: master` with `refresh: 0s` (always
+  # re-fetch). For offline/local work against a checkout, swap the whole source
+  # for {type: local, path: ../components}.
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: master
-    refresh: 0s
+      ref: v1.0.0
+    refresh: 1d
     components: [shelly_wall_dimmer, status_led_pwm]
 
 esp32:
