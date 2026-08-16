@@ -672,6 +672,147 @@ static void test_protocol_invariants() {
   }
 }
 
+// ---- over-temperature cutout ----------------------------------------------
+// Belt and suspenders in front of the TRIAC's hardware thermal cutoff. Neither
+// the co-processor nor stock's ESP32 firmware acts on temperature, so this is
+// the only firmware-level thermal response that exists.
+static void test_overtemp() {
+  group("overtemp");
+
+  auto lit = [](Rig &r) {
+    r.p().kick_enabled = false;
+    r.p().ramp_on_change = false;
+    r.p().ramp_on_off = false;
+    r.req(true, 80);
+    r.clear();
+  };
+
+  // Above the limit: the output is commanded off.
+  {
+    Rig r; lit(r);
+    r.e.notify_temperature(76);
+    CHECK(!g_tx.empty(), "over the limit emits a command");
+    CHECK(!g_tx.empty() && !byte_on(g_tx.back()), "over the limit commands the output OFF");
+    CHECK(r.e.overtemp(), "cutout latches");
+    CHECK(!r.e.is_on(), "engine tracks the output as off");
+  }
+
+  // Exactly at the limit is not over it.
+  {
+    Rig r; lit(r);
+    r.e.notify_temperature(75);
+    CHECK(g_tx.empty(), "at the limit exactly, nothing happens");
+    CHECK(!r.e.overtemp(), "at the limit the cutout does not latch");
+  }
+
+  // While hot, nothing may turn it back on -- HA, automation or wall button.
+  {
+    Rig r; lit(r);
+    r.e.notify_temperature(90);
+    r.clear();
+    r.req(true, 50);
+    CHECK(g_tx.empty(), "turn-on is refused while over temperature");
+    r.req_transition(true, 50, 1000);
+    r.advance(1200);
+    CHECK(g_tx.empty(), "a transition turn-on is refused too");
+    CHECK(!r.e.is_on(), "output stays off");
+  }
+
+  // Off is always allowed through.
+  {
+    Rig r; lit(r);
+    r.e.notify_temperature(90);
+    r.clear();
+    r.req(false, 0);
+    CHECK(!r.e.is_on(), "an explicit off still works while hot");
+  }
+
+  // Cooling clears the latch but must NOT restore the light by itself.
+  {
+    Rig r; lit(r);
+    r.e.notify_temperature(90);
+    r.clear();
+    r.e.notify_temperature(60);
+    CHECK(!r.e.overtemp(), "cooling clears the cutout");
+    CHECK(g_tx.empty(), "clearing does NOT auto-restore the output");
+    r.req(true, 40);
+    CHECK(!g_tx.empty() && byte_on(g_tx.back()), "after cooling, a turn-on works again");
+  }
+
+  // The touch panel commands the co-processor directly, so a physical turn-on
+  // during a thermal event must be undone, not merely observed.
+  {
+    Rig r; lit(r);
+    r.e.notify_temperature(90);
+    r.clear();
+    r.status(70, true);  // co-processor reports the output back ON
+    CHECK(!g_tx.empty() && !byte_on(g_tx.back()), "a touch-panel turn-on is forced back off");
+    CHECK(!r.e.is_on(), "engine keeps the output off");
+  }
+
+  // A ramp in flight is aborted rather than allowed to finish.
+  {
+    Rig r;
+    r.p().kick_enabled = false;
+    r.p().ramp_on_change = true;
+    r.p().ramp_rate = 20;      // slow, so the ramp is definitely still running
+    r.req(true, 20);
+    r.advance(5);
+    r.req(true, 100);
+    r.advance(50);
+    CHECK(r.e.busy(), "ramp is in flight");
+    r.clear();
+    r.e.notify_temperature(120);
+    CHECK(!r.e.busy(), "cutout aborts the ramp");
+    CHECK(!g_tx.empty() && !byte_on(g_tx.back()), "cutout commands off mid-ramp");
+    r.advance(500);
+    for (uint8_t b : g_tx)
+      CHECK(!byte_on(b), "no further on-commands are emitted after the cutout");
+  }
+
+  // Disabling the protection releases the latch and permits control again.
+  {
+    Rig r; lit(r);
+    r.e.notify_temperature(90);
+    CHECK(r.e.overtemp(), "latched while enabled");
+    r.p().overtemp_protect = false;
+    r.e.notify_temperature(90);
+    CHECK(!r.e.overtemp(), "disabling clears the latch");
+    r.clear();
+    r.req(true, 50);
+    CHECK(!g_tx.empty() && byte_on(g_tx.back()), "control returns when disabled");
+  }
+
+  // A configured limit is honoured, not just the default.
+  {
+    Rig r; lit(r);
+    r.p().overtemp_limit_c = 40;
+    r.e.notify_temperature(45);
+    CHECK(r.e.overtemp(), "a lowered limit trips at the lowered value");
+  }
+
+  // FIRMWARE OWNS THE SAFETY ENVELOPE. The limit is exposed to Home Assistant so
+  // it can be tightened without a reflash, but nothing off-device may widen it:
+  // a mistyped entry or a buggy automation must not be able to raise the trip
+  // past the parts' rating. Anything above the ceiling is clamped to it.
+  {
+    Rig r; lit(r);
+    r.p().overtemp_limit_c = 250;   // as if something set it absurdly high
+    CHECK(r.e.effective_overtemp_limit() == OVERTEMP_LIMIT_MAX_C,
+          "a limit above the firmware ceiling is clamped to the ceiling");
+    r.e.notify_temperature(OVERTEMP_LIMIT_MAX_C + 1);
+    CHECK(r.e.overtemp(), "the cutout still trips just above the ceiling");
+    CHECK(!r.e.is_on(), "and the output is still switched off");
+  }
+
+  // Tightening is always allowed -- the clamp is one-directional.
+  {
+    Rig r;
+    r.p().overtemp_limit_c = 50;
+    CHECK(r.e.effective_overtemp_limit() == 50, "a stricter limit passes through unchanged");
+  }
+}
+
 int main() {
   test_range_mapping();
   test_kick();
@@ -682,6 +823,7 @@ int main() {
   test_publish_floor();
   test_parser();
   test_protocol_invariants();
+  test_overtemp();
   std::printf("\n[engine+parser] %d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

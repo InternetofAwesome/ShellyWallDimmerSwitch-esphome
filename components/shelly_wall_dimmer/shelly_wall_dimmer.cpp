@@ -84,6 +84,28 @@ void ShellyWallDimmer::maybe_autocommit_() {
 }
 
 void ShellyWallDimmer::handle_status_frame_(const ::shelly_dimmer_core::StatusFrame &frame) {
+  // Over-temperature FIRST, before reconciling state: above the configured
+  // limit the engine commands the output off and refuses to let anything turn
+  // it back on, and notify_status() below depends on that flag already being
+  // set so a touch-panel turn-on during a thermal event gets undone.
+  this->engine_.notify_temperature(frame.temp_c);
+  const bool overtemp = this->engine_.overtemp();
+  if (!this->have_published_overtemp_ || overtemp != this->last_overtemp_) {
+    if (overtemp) {
+      ESP_LOGE(TAG,
+               "OVER-TEMPERATURE: co-processor reports %u C, limit %u C -- output "
+               "switched off and held off until it cools.",
+               frame.temp_c, this->engine_.effective_overtemp_limit());
+    } else if (this->have_published_overtemp_) {
+      ESP_LOGW(TAG, "Over-temperature cleared (%u C); the light can be switched on again.",
+               frame.temp_c);
+    }
+    this->have_published_overtemp_ = true;
+    this->last_overtemp_ = overtemp;
+    if (this->overtemp_binary_sensor_ != nullptr)
+      this->overtemp_binary_sensor_->publish_state(overtemp);
+  }
+
   // Let the engine reconcile: it only adopts this as new truth when it isn't
   // mid-command (kick/ramp in flight), per BEHAVIOR.md's "manual override"
   // rule -- this is what keeps us from fighting our own output.
@@ -191,6 +213,9 @@ void ShellyWallDimmer::dump_config() {
   if (this->silent_) {
     ESP_LOGCONFIG(TAG, "  UART TX: SILENT (bench mode) -- ESP will NOT drive the MCU link");
   }
+  ESP_LOGCONFIG(TAG, "  Over-temp cutout: always on, limit: %u C (firmware ceiling %u C)",
+                this->engine_.effective_overtemp_limit(),
+                (unsigned) ::shelly_dimmer_core::OVERTEMP_LIMIT_MAX_C);
   ESP_LOGCONFIG(TAG, "  Status poll interval: %ums", (unsigned) this->update_interval_ms_);
   ESP_LOGCONFIG(TAG, "  Boot-state writes (commit/revert/DFU): %s",
                 this->boot_state_layout_ok_ ? "ENABLED (layout guard OK)"

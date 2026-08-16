@@ -10,6 +10,7 @@
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/light/light_output.h"
 #include "esphome/components/number/number.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/text_sensor/text_sensor.h"
@@ -34,6 +35,7 @@ enum class DimmerNumberType {
   MIN_BRIGHTNESS,
   MAX_BRIGHTNESS,
   RAMP_RATE,
+  OVERTEMP_LIMIT,
 };
 
 // One typed boolean switch per engine toggle (kick + the three ramp gates).
@@ -42,6 +44,7 @@ enum class DimmerSwitchType {
   RAMP_ON_CHANGE,
   RAMP_ON_OFF,
   LIMIT_CORRECT,
+  OVERTEMP_PROTECT,
   // Not an engine parameter: permission to let an OTA erase the slot that still
   // holds stock firmware. Persisted, set-once-and-forget. See dfu_wrap.cpp.
   ALLOW_OVERWRITE_STOCK,
@@ -70,6 +73,7 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   // ---- entity plumbing (called from each platform's to_code()) ----
   void set_light_state(light::LightState *state) { this->light_state_ = state; }
   void set_temperature_sensor(sensor::Sensor *s) { this->temperature_sensor_ = s; }
+  void set_overtemp_binary_sensor(binary_sensor::BinarySensor *s) { this->overtemp_binary_sensor_ = s; }
   void set_last_frame_text_sensor(text_sensor::TextSensor *s) { this->last_frame_text_sensor_ = s; }
   void set_mcu_version_text_sensor(text_sensor::TextSensor *s) { this->mcu_version_text_sensor_ = s; }
 
@@ -187,6 +191,7 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
 
   light::LightState *light_state_{nullptr};
   sensor::Sensor *temperature_sensor_{nullptr};
+  binary_sensor::BinarySensor *overtemp_binary_sensor_{nullptr};
   text_sensor::TextSensor *last_frame_text_sensor_{nullptr};
   text_sensor::TextSensor *mcu_version_text_sensor_{nullptr};
 
@@ -216,6 +221,11 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   // repeats byte-for-byte (same temp, same frame). publish_state() emits a
   // state update to HA / the log stream on EVERY call, so republishing an
   // unchanged value spams once per second. Only publish on an actual change.
+  // Edge-detect for the over-temperature cutout, so the trip is logged and
+  // published once rather than on every poll while it stays hot.
+  bool have_published_overtemp_{false};
+  bool last_overtemp_{false};
+
   bool have_published_temp_{false};
   float last_published_temp_{0.0f};
   std::string last_published_frame_;
@@ -345,6 +355,9 @@ class DimmerNumber : public number::Number, public Component, public Parented<Sh
       case DimmerNumberType::RAMP_RATE:
         params.ramp_rate = static_cast<uint16_t>(value);
         break;
+      case DimmerNumberType::OVERTEMP_LIMIT:
+        params.overtemp_limit_c = static_cast<uint8_t>(value);
+        break;
     }
     this->publish_state(value);
     // Unchanged values are dropped by the NVS backend, so re-saving the boot
@@ -398,6 +411,13 @@ class DimmerSwitch : public switch_::Switch, public Component, public Parented<S
         break;
       case DimmerSwitchType::LIMIT_CORRECT:
         params.limit_correct = state;
+        break;
+      case DimmerSwitchType::OVERTEMP_PROTECT:
+        params.overtemp_protect = state;
+        if (!state)
+          ESP_LOGW("shelly_wall_dimmer",
+                   "Over-temperature cutout DISABLED. The output will no longer be switched "
+                   "off if the co-processor reports an excessive temperature.");
         break;
       case DimmerSwitchType::ALLOW_OVERWRITE_STOCK:
         break;  // handled by the early return above; not an engine parameter

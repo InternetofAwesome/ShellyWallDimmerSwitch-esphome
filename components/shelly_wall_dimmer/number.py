@@ -27,6 +27,9 @@ TYPES = {
     "min_brightness": (DimmerNumberType.MIN_BRIGHTNESS, 0, 100, 1, 1),
     "max_brightness": (DimmerNumberType.MAX_BRIGHTNESS, 0, 100, 1, 100),
     "ramp_rate": (DimmerNumberType.RAMP_RATE, 1, 1000, 1, 150),
+    # Over-temperature cutout. Above this, the output is switched off and
+    # held off. Default is provisional -- see dimmer_engine.h.
+    "overtemp_limit": (DimmerNumberType.OVERTEMP_LIMIT, 40, 85, 1, 75),
 }
 
 

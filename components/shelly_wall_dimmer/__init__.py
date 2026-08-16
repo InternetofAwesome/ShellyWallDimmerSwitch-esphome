@@ -17,7 +17,7 @@ DEPENDENCIES = ["uart"]
 # number/sensor/switch/text_sensor base classes, so those component libraries
 # must be compiled whenever the hub is configured -- even before any platform
 # entity is added. AUTO_LOAD pulls them in so a hub-only config still builds.
-AUTO_LOAD = ["light", "number", "sensor", "switch", "text_sensor"]
+AUTO_LOAD = ["binary_sensor", "light", "number", "sensor", "switch", "text_sensor"]
 MULTI_CONF = False  # one dimmer / one UART link per device
 
 shelly_wall_dimmer_ns = cg.esphome_ns.namespace("shelly_wall_dimmer")

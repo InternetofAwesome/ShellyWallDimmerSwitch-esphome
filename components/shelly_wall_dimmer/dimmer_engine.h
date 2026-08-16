@@ -40,7 +40,39 @@ struct DimmerParams {
   bool ramp_on_change = true;    // ramp on a brightness change while already on
   bool ramp_on_off = false;      // fade in on turn-on / fade out on turn-off
   bool limit_correct = false;    // if a touch report lands outside [min,max], ramp back to it
+
+  // ---- over-temperature cutout (belt and suspenders) ----------------------
+  // Over the limit, the output is commanded off. That is the whole rule.
+  //
+  // Deliberately not a thermal model and deliberately not an attempt to infer
+  // what the co-processor is doing: the limit sits far above anything normal
+  // and far below anything that damages parts, so it catches a runaway without
+  // needing to be accurate. Measured on this hardware: 25-27 C idle, ~29 C
+  // after hours at 24% load. Typical weakest-link ratings in this class are
+  // 85 C (industrial MCUs, electrolytics), TRIAC junctions higher. 75 C is
+  // ~46 C above anything observed and ~10 C below the assumed part limit.
+  //
+  // This is an ADDITIONAL layer, not the only one: a thermal cutoff is bonded
+  // to the TRIAC in hardware. Neither the co-processor nor stock's ESP32
+  // firmware acts on temperature -- stock only reports it, confirmed by
+  // disassembly -- so nothing here replaces a protection that already existed.
+  //
+  // The default is provisional until the device is characterized at full
+  // brightness into a heavy load; it is a live HA entity so it can be corrected
+  // without a reflash.
+  // NOT exposed as a runtime entity on purpose -- see OVERTEMP_LIMIT_MAX_C.
+  bool overtemp_protect = true;
+  uint8_t overtemp_limit_c = 75;  // above this, command the output off
 };
+
+// Hard ceiling on the cutout, enforced in firmware and not settable from
+// anywhere else. The limit is exposed to Home Assistant so it can be lowered
+// without a reflash, but a safety envelope that a network peer can widen is not
+// an envelope: a mistyped entry or a buggy automation could otherwise raise the
+// trip past the parts' rating, or disable protection outright. So the firmware
+// clamps whatever it is told. Home Assistant can make the cutout stricter,
+// never weaker, and cannot switch it off at all.
+static constexpr uint8_t OVERTEMP_LIMIT_MAX_C = 85;
 
 // Ramp-cadence quantization (see DimmerParams::ramp_rate). The 10 ms floor is far
 // above the 1 ms RTOS tick (CONFIG_FREERTOS_HZ=1000) so it is always resolvable,
@@ -115,6 +147,11 @@ class DimmerEngine {
 
   // External request from HA / the light layer / the pushbutton.
   void request(bool on, uint8_t brightness, uint32_t now_ms) {
+    // Over-temperature cutout: nothing may turn the output on while it is too
+    // hot -- not Home Assistant, not an automation, not the wall button. Off
+    // is always allowed through.
+    if (overtemp_ && on && brightness != 0)
+      return;
     // Idempotent no-op: when settled (IDLE) and already in exactly the
     // requested state, do nothing. This makes a device-driven state
     // reflection — a status frame echoed back through the light layer, or the
@@ -223,6 +260,42 @@ class DimmerEngine {
     }
   }
 
+  // Over-temperature cutout. Fed every status frame with the co-processor's
+  // reported die temperature. Above the limit the output is commanded off
+  // immediately, aborting any ramp in flight, and stays refused until the
+  // temperature comes back down. Nothing auto-restores: clearing the condition
+  // only permits a turn-on again, it does not perform one -- coming home to
+  // lights that switched themselves back on after a thermal event would hide
+  // the very fault this exists to expose.
+  void notify_temperature(uint8_t temp_c) {
+    if (!p_.overtemp_protect) { overtemp_ = false; return; }
+    if (temp_c > effective_overtemp_limit()) {
+      if (!overtemp_) {
+        overtemp_ = true;
+        // Command off directly rather than going through request(): a ramp may
+        // be mid-flight, and the cutout must not be subject to the ramp_on_off
+        // fade that a normal turn-off would honour.
+        mode_ = Mode::IDLE;
+        pending_off_ = false;
+        emit(encode_command(false, current_));
+        on_ = false;
+      }
+    } else {
+      overtemp_ = false;
+    }
+  }
+
+  // True while the output is held off by the over-temperature cutout.
+  bool overtemp() const { return overtemp_; }
+
+  // The limit actually enforced: whatever was configured, clamped down to the
+  // firmware ceiling. Configuring a higher value silently has no effect, which
+  // is the intended failure direction.
+  uint8_t effective_overtemp_limit() const {
+    return p_.overtemp_limit_c > OVERTEMP_LIMIT_MAX_C ? OVERTEMP_LIMIT_MAX_C
+                                                      : p_.overtemp_limit_c;
+  }
+
   // Reconcile with an unsolicited status frame (cap-touch slider moved the level,
   // or the pushbutton toggled at the MCU's echo). Only adopt when settled, so we
   // never fight our own output. With limit_correct on, a touch value outside
@@ -233,6 +306,14 @@ class DimmerEngine {
     if (mode_ != Mode::IDLE) return;
     current_ = b0_brightness;
     on_ = output_on;
+    // The touch panel commands the co-processor directly, so during a thermal
+    // event someone can physically switch the output back on without us being
+    // asked. Put it back off; a cutout that a finger can override is not one.
+    if (overtemp_ && output_on) {
+      emit(encode_command(false, current_));
+      on_ = false;
+      return;
+    }
     if (p_.limit_correct && on_) {
       uint8_t lo = p_.min_brightness, hi = p_.max_brightness;
       if (lo > hi) lo = hi;
@@ -362,6 +443,7 @@ class DimmerEngine {
   uint8_t ramp_step_ = 1;         // current ramp's step size (pct), set at start
   uint32_t ramp_interval_ms_ = 20;  // current ramp's step interval, set at start
   bool pending_off_ = false;      // fade-out in progress: send OFF on completion
+  bool overtemp_ = false;         // output held off by the over-temperature cutout
 
   // request_transition() support (see there + start_ramp_to()).
   bool force_ramp_ = false;             // ramp even if the ramp_on_*/toggle is off
