@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 using namespace shelly_dimmer_core;
@@ -473,6 +474,204 @@ static void test_publish_floor() {
   }
 }
 
+// ---- status-frame parser ---------------------------------------------------
+// The parser is the only ingress point for external data: everything the engine
+// reconciles against and everything HA displays is derived from what it emits.
+// Bounds are structurally safe (idx_ is capped by the state machine), so these
+// cover decode correctness and RESYNC, which is the part that actually bites.
+static std::vector<uint8_t> g_stray;
+static void collect_stray(uint8_t b, void *) { g_stray.push_back(b); }
+
+static void test_parser() {
+  group("parser");
+
+  auto fresh = [](FrameParser &p) {
+    g_stray.clear();
+    p.reset();
+    p.set_stray_handler(collect_stray, nullptr);
+  };
+
+  // A clean frame decodes.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    const uint8_t frame[] = {0x24, 55, 0x01, 26, 0x23};
+    int got = 0;
+    for (uint8_t b : frame) if (p.feed(b, f)) got++;
+    CHECK(got == 1, "one frame decoded from five bytes");
+    CHECK(f.brightness == 55, "b0 -> brightness");
+    CHECK(f.output_on, "b1 bit0 -> output on");
+    CHECK(!f.flag_bit1, "b1 bit1 clear");
+    CHECK(f.temp_c == 26, "b2 -> temperature");
+    CHECK(g_stray.empty(), "no stray bytes from a clean frame");
+  }
+
+  // Payload bytes equal to SOF/EOF are data, not framing. 0x24 is a plausible
+  // brightness (36) and 0x23 a plausible temperature (35 C), so this is a real
+  // on-wire case, not a contrived one.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    const uint8_t frame[] = {0x24, 0x24, 0x01, 0x23, 0x23};
+    int got = 0;
+    for (uint8_t b : frame) if (p.feed(b, f)) got++;
+    CHECK(got == 1, "frame with SOF/EOF-valued payload still decodes");
+    CHECK(f.brightness == 0x24 && f.temp_c == 0x23, "payload passed through verbatim");
+  }
+
+  // Bad EOF is rejected, and the offending byte is offered to the stray sink.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    const uint8_t bad[] = {0x24, 10, 0x01, 20, 0x99};
+    int got = 0;
+    for (uint8_t b : bad) if (p.feed(b, f)) got++;
+    CHECK(got == 0, "bad EOF yields no frame");
+    CHECK(g_stray.size() == 1 && g_stray[0] == 0x99, "bad EOF byte goes to stray");
+  }
+
+  // RESYNC: a SOF arriving where EOF was expected restarts a frame from it
+  // rather than being dropped. This is the branch that recovers a false lock.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    const uint8_t stream[] = {0x24, 1, 2, 3,      // truncated frame, no EOF...
+                              0x24, 77, 0x01, 30, 0x23};  // ...real frame follows
+    int got = 0;
+    for (uint8_t b : stream) if (p.feed(b, f)) got++;
+    CHECK(got == 1, "parser resyncs on SOF and decodes the following frame");
+    CHECK(f.brightness == 77 && f.temp_c == 30, "resynced frame decodes correctly");
+    CHECK(g_stray.empty(), "resync consumes the SOF rather than straying it");
+  }
+
+  // A false lock mid-stream self-heals within one frame.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    // Start mid-frame (as if the first bytes were lost), then two good frames.
+    const uint8_t stream[] = {0x01, 30, 0x23,
+                              0x24, 41, 0x01, 25, 0x23,
+                              0x24, 42, 0x01, 25, 0x23};
+    std::vector<int> bri;
+    for (uint8_t b : stream) if (p.feed(b, f)) bri.push_back(f.brightness);
+    CHECK(bri.size() == 2, "both real frames recovered after a mid-stream start");
+    CHECK(bri.size() == 2 && bri[0] == 41 && bri[1] == 42, "recovered in order");
+  }
+
+  // Boot banner: unframed ASCII in IDLE reaches the stray sink intact, which is
+  // how co-processor resets are detected and its version read.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    const char *banner = "reset!\nshelly_apt_003 mcu ver: v1.0.4\n";
+    for (const char *s = banner; *s; s++) p.feed((uint8_t) *s, f);
+    CHECK(g_stray.size() == std::char_traits<char>::length(banner),
+          "every banner byte reaches the stray handler");
+    CHECK(!g_stray.empty() && g_stray[0] == 'r', "banner starts intact");
+  }
+
+  // KNOWN LIMITATION, pinned so a change is deliberate: if the co-processor
+  // resets MID-FRAME, the first banner bytes are consumed as payload and never
+  // reach the stray sink, so the leading "reset!" line is truncated and reset
+  // detection can miss it. Harmless (the next frame resyncs) but real.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    p.feed(0x24, f);  // SOF, now mid-frame
+    const char *banner = "reset!\n";
+    for (const char *s = banner; *s; s++) p.feed((uint8_t) *s, f);
+    CHECK(g_stray.size() < std::char_traits<char>::length(banner),
+          "mid-frame banner is truncated (documented limitation)");
+  }
+
+  // reset() drops partial state.
+  {
+    FrameParser p; StatusFrame f{}; fresh(p);
+    p.feed(0x24, f); p.feed(9, f);
+    p.reset();
+    g_stray.clear();
+    const uint8_t frame[] = {0x24, 12, 0x01, 22, 0x23};
+    int got = 0;
+    for (uint8_t b : frame) if (p.feed(b, f)) got++;
+    CHECK(got == 1, "reset() lets the next frame parse cleanly");
+    CHECK(f.brightness == 12, "post-reset frame decodes correctly");
+  }
+}
+
+// ---- wire-format invariants ------------------------------------------------
+// The codec is tiny, but a malformed command byte is indistinguishable on the
+// wire from a legitimate one, and the co-processor will act on it. These pin
+// the encoding itself plus two whole-sequence invariants that correspond to
+// bugs this project actually shipped and had to chase on hardware.
+static void test_protocol_invariants() {
+  group("wire-format");
+
+  // Encoding, from PROTOCOL: bit7 = on/off, bits6:0 = brightness 0..100.
+  CHECK(encode_command(true, 0) == 0x80, "on at 0 -> 0x80");
+  CHECK(encode_command(true, 1) == 0x81, "on at 1 -> 0x81");
+  CHECK(encode_command(true, 100) == 0xE4, "on at 100 -> 0xE4");
+  CHECK(encode_command(false, 0) == 0x00, "off at 0 -> 0x00");
+  CHECK(encode_command(false, 100) == 0x64, "off preserves brightness bits -> 0x64");
+  // Out-of-range must clamp, never wrap into the on/off bit. An unclamped 128
+  // would encode as 0x80 == "on at 0".
+  CHECK(encode_command(false, 200) == 0x64, "off clamps >100 to 100");
+  CHECK(encode_command(true, 200) == 0xE4, "on clamps >100 to 100");
+  CHECK(encode_command(false, 128) == 0x64, "off clamps 128 (would alias bit7)");
+  CHECK(CMD_POLL == 0xFF, "poll byte is 0xFF");
+  CHECK(FRAME_SOF == 0x24 && FRAME_EOF == 0x23, "frame delimiters are '$' and '#'");
+
+  // Whole-sequence invariants, swept across the parameter space. Two failures
+  // seen on hardware live here: brightness bytes escaping the 0..100 range, and
+  // a SPURIOUS OFF byte emitted partway through a turn-on (originally caused by
+  // a transition boundary being read as off, which made the lamp blink).
+  const int levels[] = {1, 5, 20, 50, 99, 100};
+  const int kicks[] = {0, 20, 60, 100};
+  const int rates[] = {1, 150, 1000};
+  for (int kick : kicks) {
+    for (int rate : rates) {
+      for (int target : levels) {
+        for (int mode = 0; mode < 4; mode++) {
+          Rig r;
+          r.p().kick_enabled = (mode & 1) != 0;
+          r.p().ramp_on_off = (mode & 2) != 0;
+          r.p().ramp_on_change = true;
+          r.p().kick_level = (uint8_t) kick;
+          r.p().ramp_rate = (uint16_t) rate;
+          r.clear();
+          r.req(true, (uint8_t) target);       // turn on from off
+          // Cap must cover the SLOWEST legal rate: at ramp_rate=1 %/s a
+          // full-range move takes ~100 s, plus the kick dwell. A cap that only
+          // suited the fast rates would assert mid-ramp and "fail" the engine
+          // for still being busy.
+          uint32_t el = r.advance_until_idle(150000);
+          CHECK(el != UINT32_MAX, "turn-on settles within the rate's worst case");
+          bool bad_range = false, spurious_off = false;
+          for (uint8_t b : g_tx) {
+            if (byte_bri(b) > 100) bad_range = true;
+            if (!byte_on(b)) spurious_off = true;  // nothing here should turn it off
+          }
+          CHECK(!bad_range, "every emitted brightness stays within 0..100");
+          CHECK(!spurious_off, "a turn-on sequence never emits an OFF byte");
+          CHECK(r.last_on() && r.last_bri() == target,
+                "turn-on settles exactly on the requested level");
+        }
+      }
+    }
+  }
+
+  // A turn-off must end with exactly one OFF byte, and it must be last --
+  // anything emitted after it would switch the lamp back on.
+  {
+    Rig r;
+    r.p().kick_enabled = false;
+    r.p().ramp_on_off = true;
+    r.p().ramp_rate = 300;
+    r.req(true, 80);
+    r.advance_until_idle(5000);
+    r.clear();
+    r.req(false, 0);
+    r.advance_until_idle(5000);
+    CHECK(!g_tx.empty(), "turn-off emits something");
+    CHECK(!g_tx.empty() && !byte_on(g_tx.back()), "the LAST byte of a fade-out is the OFF");
+    int offs = 0;
+    for (uint8_t b : g_tx) if (!byte_on(b)) offs++;
+    CHECK(offs == 1, "exactly one OFF byte is emitted");
+  }
+}
+
 int main() {
   test_range_mapping();
   test_kick();
@@ -481,6 +680,8 @@ int main() {
   test_transition();
   test_noop();
   test_publish_floor();
-  std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
+  test_parser();
+  test_protocol_invariants();
+  std::printf("\n[engine+parser] %d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
