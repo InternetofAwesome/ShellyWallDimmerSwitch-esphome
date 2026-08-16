@@ -6,7 +6,9 @@ Flashes **over the air — no opening the device, no USB, no soldering.**
 
 Only the ESP32 (the Wi-Fi part) is replaced. **The co-processor that actually switches mains keeps running its untouched factory firmware.**
 
-> ⚠️ You are reflashing a mains-powered device in your wall, using a path the manufacturer never intended. It is built to fail safe and it runs daily on the author's switches, but **you accept the risk** — please read [Use at your own risk](#use-at-your-own-risk) and [What was done to de-risk this](#what-was-done-to-de-risk-this).
+> ⚠️ You are reflashing a mains-powered device in your wall, using a path the manufacturer never intended. It is built to fail safe, but **you accept the risk** — please read [Use at your own risk](#use-at-your-own-risk) and [What was done to de-risk this](#what-was-done-to-de-risk-this).
+>
+> **Install a [tagged release](#releases-and-stability).** Untagged code, `master` included, is unstable and may never have been run on hardware.
 >
 > One thing to know up front: **"fail safe" is not "reversible to stock."** See [Getting back to stock](#getting-back-to-stock-untested) before your *second* flash.
 
@@ -23,30 +25,63 @@ Only the ESP32 (the Wi-Fi part) is replaced. **The co-processor that actually sw
 
 ## Contents
 
-1. [What you need](#what-you-need)
-2. [How flashing works](#how-flashing-works)
-3. [First flash: getting this onto a stock dimmer](#first-flash-getting-this-onto-a-stock-dimmer)
-4. [Updating after the first flash](#updating-after-the-first-flash)
-5. [Minimal configuration](#minimal-configuration)
-6. [Full configuration](#full-configuration)
-7. [Option reference](#option-reference)
+1. [Releases and stability](#releases-and-stability)
+2. [What you need](#what-you-need)
+3. [How flashing works](#how-flashing-works)
+4. [First flash: getting this onto a stock dimmer](#first-flash-getting-this-onto-a-stock-dimmer)
+5. [Updating after the first flash](#updating-after-the-first-flash)
+6. [Minimal configuration](#minimal-configuration)
+7. [Full configuration](#full-configuration)
+8. [Option reference](#option-reference)
    - [Hub options](#hub-options)
    - [Light options](#light-options)
    - [Number options](#number-options)
    - [Switch options](#switch-options)
    - [Sensor options](#sensor-options)
    - [Local hardware: button and LEDs](#local-hardware-button-and-leds)
-8. [How the kick and ramps behave](#how-the-kick-and-ramps-behave)
-9. [Converting more switches](#converting-more-switches)
-10. [What persists](#what-persists)
-11. [Getting back to stock (untested)](#getting-back-to-stock-untested)
-12. [Developer and recovery buttons](#developer-and-recovery-buttons)
-13. [Troubleshooting](#troubleshooting)
-14. [Use at your own risk](#use-at-your-own-risk)
-15. [What was done to de-risk this](#what-was-done-to-de-risk-this)
-16. [Testing](#testing)
-17. [Repo layout](#repo-layout)
-18. [License](#license)
+9. [How the kick and ramps behave](#how-the-kick-and-ramps-behave)
+10. [Converting more switches](#converting-more-switches)
+11. [What persists](#what-persists)
+12. [Getting back to stock (untested)](#getting-back-to-stock-untested)
+13. [Developer and recovery buttons](#developer-and-recovery-buttons)
+14. [Troubleshooting](#troubleshooting)
+15. [Use at your own risk](#use-at-your-own-risk)
+16. [What was done to de-risk this](#what-was-done-to-de-risk-this)
+17. [Testing](#testing)
+18. [Repo layout](#repo-layout)
+19. [License](#license)
+
+---
+
+## Releases and stability
+
+**A tagged release has run on real hardware.** Every tag means that exact build was
+flashed to an actual dimmer and used in a real installation — not that its tests went
+green. The test suite is necessary and it is not sufficient; nothing gets tagged on
+passing CI alone. Tags are immutable, so what you pin is what you get.
+
+**Everything else is unstable.** That explicitly includes the tip of `master`: it may be
+mid-refactor, it may be partially tested, and **it may never have been run on real
+hardware.** Commits land here continuously and there is no commitment that any given
+push has been flashed to a physical dimmer.
+
+So pin `external_components` to a tag:
+
+```yaml
+    source:
+      type: git
+      url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
+      ref: v0.0.0          # a release tag, not `master`
+    refresh: 1d
+```
+
+A pre-release suffix (`-alpha`, `-beta`) does **not** mean untested — it still ran on
+hardware, or it would not have been tagged. It means there is not much real-world time
+behind it yet: few units, few days, and corners that have not come up in daily use.
+
+Field time on the author's own switches accrues to the specific builds that were
+installed on them. It does not transfer forward to a release automatically, and this
+README will not claim otherwise.
 
 ---
 
@@ -178,7 +213,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0-alpha
+      ref: v1.0.0-alpha   # not published yet -- see Releases and stability
     components: [shelly_wall_dimmer, status_led_pwm]
 
 # UART to the dimming co-processor. These pins are not negotiable.
@@ -256,7 +291,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0-alpha
+      ref: v1.0.0-alpha   # not published yet -- see Releases and stability
     refresh: 1d
     components: [shelly_wall_dimmer, status_led_pwm]
 
@@ -619,7 +654,7 @@ That materially limits the blast radius — it does not eliminate it. This is a 
 
 **On how this was built:** it was written with heavy AI assistance, reviewed throughout by the author — a firmware engineer with ~20 years of professional industry experience. That is not a claim of perfection, and it is not a substitute for testing. It means someone who has shipped firmware for a living had their eyes on every part of it. The [de-risking section](#what-was-done-to-de-risk-this) below is written to be read as an engineer would want it: it states what was verified and how, names the gaps deliberately left open, and gives you the commands to reproduce the parts that are reproducible. Where something is untested, it says so.
 
-It is built to fail safe: two app slots, automatic rollback, CRC-verified boot records, a partition-layout guard, and a refusal to overwrite your stock image without explicit consent. It runs daily on the author's own switches. None of that is a guarantee. You may end up with a device that needs opening and a soldered serial connection to recover, or one that is simply dead. **You accept that risk entirely.** No warranty, express or implied; the author accepts no liability for damage to your hardware, wiring, or property. If you are not comfortable with that, do not flash it.
+It is built to fail safe: two app slots, automatic rollback, CRC-verified boot records, a partition-layout guard, and a refusal to overwrite your stock image without explicit consent. None of that is a guarantee. You may end up with a device that needs opening and a soldered serial connection to recover, or one that is simply dead. **You accept that risk entirely.** No warranty, express or implied; the author accepts no liability for damage to your hardware, wiring, or property. If you are not comfortable with that, do not flash it.
 
 ---
 
@@ -670,7 +705,7 @@ Stated plainly, because a de-risking section that lists only successes isn't one
 - **Command rate above ~20 Hz is unvalidated on hardware.** 20 Hz is stock's own cadence and is proven good. `ramp_rate: 1000` emits roughly 100 Hz against a ~120 Hz physical ceiling. The top of that slider's range has no evidence behind it.
 - **Power loss during a boot-record write** is mitigated by design (single-copy writes, the other copy always valid) but has not been empirically tested.
 - **Restoring stock after the fallback slot is overwritten is untested** — see [Getting back to stock](#getting-back-to-stock-untested).
-- **One hardware variant.** US SKU, one board revision, four units.
+- **One hardware variant.** US SKU, one board revision, four units — and that field time belongs to the builds that were actually installed, not automatically to the current release. See [Releases and stability](#releases-and-stability).
 - **Co-processor fault flags are not surfaced.** Temperature is read; the second status bit remains undecoded and unused. Stock's overtemp / no-load / non-dimmable handling is not reproduced.
 - **The ESPHome integration layer has no automated coverage.** What is tested is the engine, the frame parser, the boot records and the packaging. The glue binding them to Home Assistant entities is covered by bring-up and daily field use, not by tests.
 - **A committed slot with a broken image does not self-recover.** Committing is what makes an image permanent, and the bootloader will loop on it forever rather than fall back. This firmware only auto-commits after an image has run healthily for 30 s, which is what keeps that safe.
