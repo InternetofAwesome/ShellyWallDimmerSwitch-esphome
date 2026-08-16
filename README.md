@@ -24,27 +24,25 @@ Only the ESP32 (the Wi-Fi part) is replaced. **The co-processor that actually sw
 ---
 
 ## Contents
+**Part 1 — getting it running**
 
-1. [Releases and stability](#releases-and-stability)
-2. [What you need](#what-you-need)
-3. [How flashing works](#how-flashing-works)
-4. [First flash: getting this onto a stock dimmer](#first-flash-getting-this-onto-a-stock-dimmer)
-5. [Updating after the first flash](#updating-after-the-first-flash)
-6. [Minimal configuration](#minimal-configuration)
-7. [Full configuration](#full-configuration)
-8. [Option reference](#option-reference)
-   - [Hub options](#hub-options)
-   - [Light options](#light-options)
-   - [Number options](#number-options)
-   - [Switch options](#switch-options)
-   - [Sensor options](#sensor-options)
-   - [Local hardware: button and LEDs](#local-hardware-button-and-leds)
-9. [How the kick and ramps behave](#how-the-kick-and-ramps-behave)
-10. [Converting more switches](#converting-more-switches)
-11. [What persists](#what-persists)
-12. [Getting back to stock (untested)](#getting-back-to-stock-untested)
-13. [Developer and recovery buttons](#developer-and-recovery-buttons)
-14. [Troubleshooting](#troubleshooting)
+1. [What you need](#what-you-need)
+2. [How flashing works](#how-flashing-works)
+3. [First flash: getting this onto a stock dimmer](#first-flash-getting-this-onto-a-stock-dimmer)
+4. [Updating after the first flash](#updating-after-the-first-flash)
+5. [Minimal configuration](#minimal-configuration)
+6. [Full configuration](#full-configuration)
+7. [Option reference](#option-reference)
+8. [How the kick and ramps behave](#how-the-kick-and-ramps-behave)
+9. [Converting more switches](#converting-more-switches)
+10. [Troubleshooting](#troubleshooting)
+
+**Part 2 — how it works, and where to check my work**
+
+11. [Releases and stability](#releases-and-stability)
+12. [What persists](#what-persists)
+13. [Getting back to stock (untested)](#getting-back-to-stock-untested)
+14. [Developer and recovery buttons](#developer-and-recovery-buttons)
 15. [Use at your own risk](#use-at-your-own-risk)
 16. [What was done to de-risk this](#what-was-done-to-de-risk-this)
 17. [Testing](#testing)
@@ -53,39 +51,10 @@ Only the ESP32 (the Wi-Fi part) is replaced. **The co-processor that actually sw
 
 ---
 
-## Releases and stability
-
-**A tagged release has run on real hardware.** Every tag means that exact build was
-flashed to an actual dimmer and used in a real installation — not that its tests went
-green. The test suite is necessary and it is not sufficient; nothing gets tagged on
-passing CI alone. Tags are immutable, so what you pin is what you get.
-
-**Everything else is unstable.** That explicitly includes the tip of `master`: it may be
-mid-refactor, it may be partially tested, and **it may never have been run on real
-hardware.** Commits land here continuously and there is no commitment that any given
-push has been flashed to a physical dimmer.
-
-So pin `external_components` to a tag:
-
-```yaml
-    source:
-      type: git
-      url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v0.0.0          # a release tag, not `master`
-    refresh: 1d
-```
-
-A pre-release suffix (`-alpha`, `-beta`) does **not** mean untested — it still ran on
-hardware, or it would not have been tagged. It means there is not much real-world time
-behind it yet: few units, few days, and corners that have not come up in daily use.
-
-Field time on the author's own switches accrues to the specific builds that were
-installed on them. It does not transfer forward to a release automatically, and this
-README will not claim otherwise.
-
----
+# Part 1 — getting it running
 
 ## What you need
+
 
 - A **Shelly Plus Wall Dimmer US** (`SNDM-0013US`), installed and working on stock firmware, on your LAN.
 - **Its IP address.** You point the installer at it directly.
@@ -94,9 +63,14 @@ README will not claim otherwise.
 
 That's all. No cable, no USB-serial adapter, no disassembly, no soldering.
 
+> **Install a released version.** The config below points at a specific release tag. Don't change it to `master` — that's the development branch, and it may not even have been switched on before. See [Releases and stability](#releases-and-stability).
+
+---
+
 ---
 
 ## How flashing works
+
 
 Worth thirty seconds, because the first flash and every later one use **completely different paths** — and mixing them up is the one way to lose your safety net.
 
@@ -123,7 +97,10 @@ The dimmer has **two firmware slots**. Only one runs at a time; the other is the
 
 ---
 
+---
+
 ## First flash: getting this onto a stock dimmer
+
 
 1. **ESPHome Builder → `+ NEW DEVICE`.** Give it a name (e.g. `office-dimmer`); pick **ESP32** if asked. The wizard generates an API encryption key and OTA password and puts your Wi-Fi credentials in `secrets.yaml`. Let it finish, then **skip** the install it offers.
 
@@ -159,7 +136,7 @@ The dimmer has **two firmware slots**. Only one runs at a time; the other is the
 
    > **Why not Wireless?** With `bridge_package` configured, "Wireless" would deliver firmware *twice by two different routes* in one command — which can write **both** slots and destroy your stock fallback. The component refuses to build at all for an install/upload job. Use Manual download.
 
-6. **The dimmer flashes its empty slot and reboots into this firmware.** It appears **online** in the Builder. Open its **Logs** and confirm your `fw_version` in the boot banner and a `layout guard OK` line.
+6. **The dimmer flashes its empty slot and reboots into this firmware.** It appears **online** in the Builder. Open its **Logs** and check two things: your `fw_version` in the startup banner, and a line reading `layout guard OK`. That second one is the firmware confirming the device's flash is laid out the way it expects — if it ever says otherwise, the firmware disables the parts of itself that could make the device unbootable, and you should stop and ask.
 
 7. **Home Assistant discovers it.** Settings → Devices & Services → ESPHome should offer the new device. Add it (paste the API key if prompted) and the entities appear.
 
@@ -169,7 +146,10 @@ The dimmer has **two firmware slots**. Only one runs at a time; the other is the
 
 ---
 
+---
+
 ## Updating after the first flash
+
 
 Normal ESPHome: **Install → Wireless**.
 
@@ -188,9 +168,12 @@ The check happens *before* anything is erased, so a refused update leaves stock 
 
 ---
 
+---
+
 ## Minimal configuration
 
-The smallest config that works. Everything Shelly-specific — single-core build, the exact partition table, boot-record safety — is injected by the component, so this stays plain ESPHome.
+
+The smallest config that works. The fiddly device-specific parts are handled for you by the component, so nothing below is unusual ESPHome — it looks like any other device's config, because it is one.
 
 ```yaml
 substitutions:
@@ -264,7 +247,10 @@ With just this you get the light, the kick, ramps, and defaults for everything e
 
 ---
 
+---
+
 ## Full configuration
+
 
 Every option this component offers. The [`example/`](example/shelly-wall-dimmer.yaml) file is the same thing with much longer explanatory comments.
 
@@ -458,7 +444,10 @@ logger:
 
 ---
 
+---
+
 ## Option reference
+
 
 ### Hub options
 
@@ -534,7 +523,10 @@ Both LEDs are **active-low** (bench-confirmed), which is why the `output:` block
 
 ---
 
+---
+
 ## How the kick and ramps behave
+
 
 **Kick.** With `kick_enabled`, every turn-on from off snaps straight to `kick_level` — below that the bulb is dark anyway, so there is nothing to fade through. Then it reaches your target:
 
@@ -550,7 +542,10 @@ With kick off, a turn-on jumps straight to target, or fades up from 0 if `ramp_o
 
 ---
 
+---
+
 ## Converting more switches
+
 
 **Don't copy a working device's YAML.** It's the obvious move and it quietly couples the two devices. Repeat step 1 instead — **Builder → `+ NEW DEVICE`** — so the wizard mints this device its own API key and OTA password, paste the config over it as before, then carry across **only your tuned values** (kick level and dwell, ramp rate, min/max, LED brightness).
 
@@ -567,9 +562,79 @@ Each switch keeps its **own** stock image in its own spare slot, with its own **
 
 ---
 
+---
+
+## Troubleshooting
+
+
+| Symptom | Likely cause |
+|---|---|
+| Bridge push runs but the device never updates | The version didn't change. Stock skips an update matching its running version — bump `fw_version`. |
+| `bridge_package` seems to do nothing, no errors | Missing `toolchain: platformio`. The component now catches this at config time. |
+| Build refuses with "must not run as part of an upload job" | You used Install → Wireless with `bridge_package` configured. Use **Manual download**. |
+| Wireless update refused with `OTA REFUSED` | Working as designed — see [Updating after the first flash](#updating-after-the-first-flash). |
+| Device boots but no state, no temperature | UART wiring — try swapping `tx_pin`/`rx_pin`. |
+| Light responds backwards to the button | Flip `inverted:` on the `GPIO4` binary sensor. |
+| LEDs full-on when they should be off | LED polarity — the `inverted: true` on the `ledc` outputs. |
+| Low brightness does nothing / jumps oddly | `gamma_correct: 0` missing, or `kick_level` set below what your bulb can strike. |
+| Ramps stutter or fight themselves | `default_transition_length: 0s` missing. |
+| HA logs `Invalid encryption key` right after conversion | Expected for a reboot or two while the device comes up on new firmware. Clears itself; if it persists, the key really is mismatched. |
+
+---
+
+---
+
+# Part 2 — how it works, and where to check my work
+
+Everything above gets a switch running. Everything below is for readers who want to
+audit the thing: what it does to the device, what was verified and how, and where the
+weak points are. It assumes you work with firmware, and it spells out terms that are
+specific to this device or to ESP-IDF rather than assuming them.
+
+If you are here looking for where this goes wrong, start with
+[Known gaps](#known-gaps) — the list is deliberately not flattering.
+
+## Releases and stability
+
+
+**A tagged release has run on real hardware.** Every tag means that exact build was
+flashed to an actual dimmer and used in a real installation — not that its tests went
+green. The test suite is necessary and it is not sufficient; nothing gets tagged on
+passing CI alone. Tags are immutable, so what you pin is what you get.
+
+**Everything else is unstable.** That explicitly includes the tip of `master`: it may be
+mid-refactor, it may be partially tested, and **it may never have been run on real
+hardware.** Commits land here continuously and there is no commitment that any given
+push has been flashed to a physical dimmer.
+
+So pin `external_components` to a tag:
+
+```yaml
+    source:
+      type: git
+      url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
+      ref: v0.0.0          # a release tag, not `master`
+    refresh: 1d
+```
+
+A pre-release suffix (`-alpha`, `-beta`) does **not** mean untested — it still ran on
+hardware, or it would not have been tagged. It means there is not much real-world time
+behind it yet: few units, few days, and corners that have not come up in daily use.
+
+Field time on the author's own switches accrues to the specific builds that were
+installed on them. It does not transfer forward to a release automatically, and this
+README will not claim otherwise.
+
+---
+
+---
+
 ## What persists
 
-Everything persisted lives in the **`nvs` partition at `0x9000`, 16 KB** — Shelly's, not ours. This firmware ships app-only, so neither the first flash nor any later update touches it. Writes are batched and flushed every 60 s and on a clean reboot or update (`preferences: flash_write_interval:` to change that).
+
+**Short version: your settings survive reboots and updates.** Tune a switch once and it stays tuned.
+
+The detail matters if you are auditing what this touches. Everything persisted lives in the **`nvs` partition at `0x9000`, 16 KB** — the non-volatile key/value store the ESP32 uses for settings. It is Shelly's, not ours. This firmware ships app-only, so neither the first flash nor any later update touches it. Writes are batched and flushed every 60 s and on a clean reboot or update (`preferences: flash_write_interval:` to change that).
 
 Persisted by this component — the key is a hash of the entity's **object ID**, so renaming an entity orphans its stored value and it reverts to the first-boot default:
 
@@ -593,7 +658,10 @@ Three things wipe stored values: a **full-erase serial flash**, **reverting to s
 
 ---
 
+---
+
 ## Getting back to stock (untested)
+
 
 Be clear-eyed about what "fail safe" covers: **updates** are safe (a bad build auto-reverts to the other slot), but **restoring stock** is a different claim, and it has not been proven.
 
@@ -610,7 +678,10 @@ This is why the firmware refuses that second update until you flip **Allow Overw
 
 ---
 
+---
+
 ## Developer and recovery buttons
+
 
 The example keeps a set of diagnostic buttons **commented out** — normal operation never needs them, since a healthy image commits itself and a bad one auto-reverts. Worth enabling for a first conversion of a hard-to-reach unit.
 
@@ -629,24 +700,10 @@ A partition-layout guard refuses all of these on any flash map it doesn't recogn
 
 ---
 
-## Troubleshooting
-
-| Symptom | Likely cause |
-|---|---|
-| Bridge push runs but the device never updates | The version didn't change. Stock skips an update matching its running version — bump `fw_version`. |
-| `bridge_package` seems to do nothing, no errors | Missing `toolchain: platformio`. The component now catches this at config time. |
-| Build refuses with "must not run as part of an upload job" | You used Install → Wireless with `bridge_package` configured. Use **Manual download**. |
-| Wireless update refused with `OTA REFUSED` | Working as designed — see [Updating after the first flash](#updating-after-the-first-flash). |
-| Device boots but no state, no temperature | UART wiring — try swapping `tx_pin`/`rx_pin`. |
-| Light responds backwards to the button | Flip `inverted:` on the `GPIO4` binary sensor. |
-| LEDs full-on when they should be off | LED polarity — the `inverted: true` on the `ledc` outputs. |
-| Low brightness does nothing / jumps oddly | `gamma_correct: 0` missing, or `kick_level` set below what your bulb can strike. |
-| Ramps stutter or fight themselves | `default_transition_length: 0s` missing. |
-| HA logs `Invalid encryption key` right after conversion | Expected for a reboot or two while the device comes up on new firmware. Clears itself; if it persists, the key really is mismatched. |
-
 ---
 
 ## Use at your own risk
+
 
 **The firmware that actually switches mains is not modified by this project.** Zero-cross detection and TRIAC gate drive live on a separate co-processor running its factory image; this replaces only the ESP32 that handles Wi-Fi and Home Assistant, and commands that co-processor exactly the way stock did. No high-voltage timing, switching, or protection logic is altered.
 
@@ -658,7 +715,10 @@ It is built to fail safe: two app slots, automatic rollback, CRC-verified boot r
 
 ---
 
+---
+
 ## What was done to de-risk this
+
 
 **Architecture.** Three processors, two of which are untouched:
 
@@ -717,7 +777,10 @@ Stated plainly, because a de-risking section that lists only successes isn't one
 
 ---
 
+---
+
 ## Testing
+
 
 Three suites. The first runs anywhere with a C++17 compiler; the other two skip cleanly without QEMU and stock images:
 
@@ -736,7 +799,10 @@ See [`tests/README.md`](tests/README.md). What none of them reach — the ESPHom
 
 ---
 
+---
+
 ## Repo layout
+
 
 - `components/shelly_wall_dimmer/` — the main ESPHome component.
 - `components/status_led_pwm/` — small light platform: a dimmable PWM status LED that blinks on ESPHome's warning/error state.
@@ -745,6 +811,9 @@ See [`tests/README.md`](tests/README.md). What none of them reach — the ESPHom
 
 ---
 
+---
+
 ## License
+
 
 GPL-3.0 — see [LICENSE](LICENSE).
