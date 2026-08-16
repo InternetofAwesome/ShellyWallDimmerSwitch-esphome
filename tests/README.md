@@ -1,14 +1,70 @@
 # Tests
 
-Two suites: the **dimmer engine** (kick / ramp / range mapping) and
-**bridge-package safety** (the first-flash image that could brick a device).
+Three suites: the **dimmer engine + frame parser** (kick / ramp / range mapping /
+protocol decode), **bridge-package safety** (the first-flash image that could
+brick a device), and the **boot matrix** (SH0S boot-record semantics against the
+real Shelly bootloader).
 
 ```sh
 cd tests
-make            # run both
-make engine     # engine only
-make bridge     # bridge-package only
+make              # run all three
+make engine       # engine + parser only (needs only a C++17 compiler)
+make bridge       # bridge-package safety
+make boot-matrix  # boot records vs the real bootloader, under QEMU
+
+make stock-fw     # one-time: fetch the stock images the QEMU layers need
 ```
+
+`make engine` has no dependencies beyond a compiler. The QEMU layers need
+`qemu-system-xtensa` from Espressif's fork plus Shelly's own bootloader and
+application images, which this repo does not redistribute — `make stock-fw`
+downloads them from Shelly's CDN and verifies them against content hashes
+(see `fetch_stock_fw.py` for why that is safe without a trusted CA). Without
+them those layers skip cleanly and the rest still runs.
+
+---
+
+## Boot matrix — `boot_matrix_test.py`
+
+Everything that keeps this firmware recoverable rests on knowing exactly how
+Shelly's proprietary SH0S boot record drives the bootloader. This suite does not
+argue that model, it executes it: seeded records are fed to the real bootloader
+under QEMU and the decisions are read out of its own log, across **both** shipped
+bootloader builds (`1.0.0`/IDF 4.4.4 from the 1.3.3 package, `1.0.3`/IDF 5.5.2
+from 2.0.0).
+
+Pinned, as a 2×2 over the committed flag `c` and the boot-attempts counter `ba`:
+
+| record | bootloader behavior |
+|---|---|
+| `c=1, ba=3` | boots the active slot indefinitely, `ba` ignored, no otadata writes |
+| `c=0, ba=3` | counts `ba` down once per boot, then reverts to `rs` and commits it |
+
+Plus the record **acceptance** rules, each corresponding to a failure this
+project actually suffered or an invariant the firmware depends on:
+
+| case | asserted behavior |
+|---|---|
+| higher-seq copy with a **stale CRC** | rejected; the older valid copy boots |
+| two valid copies, differing `seq` | the higher-seq one decides the slot |
+| one copy erased, one valid | boots normally (single-copy writes are survivable) |
+| **both** copies erased | reports "no valid boot state" and boots **nothing** (the brick gate) |
+
+The stale-CRC case is the important one. This project once believed the record
+had no checksum and wrote boot records without resealing the CRCs; every commit
+and revert silently became a no-op, and the resulting wrong model of `ba` lived
+in the comments for weeks. That failure is now a test.
+
+The payload in both app slots is a **deliberately corrupted** image (valid header,
+broken SHA-256), so the countdown is driven by a real boot failure and no
+application code can influence the outcome. That isolation matters: an earlier
+draft used the intact stock app and produced a misleading pass, because the 2.0.0
+application boots far enough under QEMU to run Shelly's *own* recovery logic and
+revert itself — which looks identical in the final record but is a completely
+different mechanism.
+
+This suite also retracts a wrong claim that once lived in `boot_state.h`: that
+`ba>0` defeats `c=1`. It does not. See the note in `BootState::commit()`.
 
 ---
 

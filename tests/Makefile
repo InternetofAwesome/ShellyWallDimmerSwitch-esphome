@@ -18,14 +18,32 @@ PYTHON   ?= python3
 ENGINE_HDRS = ../components/shelly_wall_dimmer/dimmer_engine.h \
               ../components/shelly_wall_dimmer/dimmer_protocol.h
 
-.PHONY: test engine bridge clean
-test: engine bridge
+.PHONY: test engine bridge boot-matrix stock-fw clean
+test: engine bridge boot-matrix
 
 engine: engine_test
 	./engine_test
 
+# If `make stock-fw` has been run, hand the bridge test the fetched images
+# automatically so its QEMU layer stops silently skipping. An explicit
+# SHELLY_FW_DIR in the environment still wins.
+STOCK_2_0_0 := $(wildcard stock_fw/2.0.0)
+ifneq ($(STOCK_2_0_0),)
+export SHELLY_FW_DIR ?= $(abspath stock_fw/2.0.0)
+endif
+
 bridge:
 	$(PYTHON) bridge_package_test.py
+
+# SH0S boot-record semantics against the real Shelly bootloader under QEMU.
+# Skips cleanly without QEMU or the stock images; `make stock-fw` fetches those.
+boot-matrix:
+	$(PYTHON) boot_matrix_test.py
+
+# One-time: retrieve the stock firmware packages the QEMU layers need. Nothing
+# downloaded is committed; see fetch_stock_fw.py for the integrity model.
+stock-fw:
+	$(PYTHON) fetch_stock_fw.py
 
 engine_test: engine_test.cpp $(ENGINE_HDRS)
 	$(CXX) $(CXXFLAGS) engine_test.cpp -o engine_test
