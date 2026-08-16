@@ -178,7 +178,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0
+      ref: v1.0.0-alpha
     components: [shelly_wall_dimmer, status_led_pwm]
 
 # UART to the dimming co-processor. These pins are not negotiable.
@@ -256,7 +256,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0
+      ref: v1.0.0-alpha
     refresh: 1d
     components: [shelly_wall_dimmer, status_led_pwm]
 
