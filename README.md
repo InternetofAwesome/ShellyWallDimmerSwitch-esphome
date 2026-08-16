@@ -16,6 +16,7 @@ Only the ESP32 is replaced. **The co-processor that actually switches mains keep
 - **Home Assistant transitions** — `transition: Ns` ramps over exactly that duration, using this firmware's engine rather than ESPHome's, so the two don't fight. Composes with the kick.
 - **Range mapping** — stretch the 0–100 % slider across a usable window (e.g. 20–80 % real). It's a stretch, not a clamp, and device reports are mapped back so HA still reads 0–100 %.
 - **Limit correction** — optionally pull physical touch-dimming back inside that window (best effort; the co-processor acts first).
+- **Over-temperature cutout** — above a configurable co-processor temperature the output is switched off and held off until it cools. Enforced in firmware with a hard ceiling; see [Thermal cutout](#thermal-cutout).
 
 **Control and entities**
 
@@ -55,21 +56,28 @@ Only the ESP32 is replaced. **The co-processor that actually switches mains keep
 5. [Minimal configuration](#minimal-configuration)
 6. [Full configuration](#full-configuration)
 7. [Option reference](#option-reference)
+   - [Hub options](#hub-options)
+   - [Light options](#light-options)
+   - [Number options](#number-options)
+   - [Switch options](#switch-options)
+   - [Sensor options](#sensor-options)
+   - [Local hardware: button and LEDs](#local-hardware-button-and-leds)
 8. [How the kick and ramps behave](#how-the-kick-and-ramps-behave)
-9. [Converting more switches](#converting-more-switches)
-10. [Troubleshooting](#troubleshooting)
+9. [Thermal cutout](#thermal-cutout)
+10. [Converting more switches](#converting-more-switches)
+11. [Troubleshooting](#troubleshooting)
 
 **Part 2 — how it works, and where to check my work**
 
-11. [Releases and stability](#releases-and-stability)
-12. [What persists](#what-persists)
-13. [Getting back to stock (untested)](#getting-back-to-stock-untested)
-14. [Developer and recovery buttons](#developer-and-recovery-buttons)
-15. [Use at your own risk](#use-at-your-own-risk)
-16. [What was done to de-risk this](#what-was-done-to-de-risk-this)
-17. [Testing](#testing)
-18. [Repo layout](#repo-layout)
-19. [License](#license)
+12. [Releases and stability](#releases-and-stability)
+13. [What persists](#what-persists)
+14. [Getting back to stock (untested)](#getting-back-to-stock-untested)
+15. [Developer and recovery buttons](#developer-and-recovery-buttons)
+16. [Use at your own risk](#use-at-your-own-risk)
+17. [What was done to de-risk this](#what-was-done-to-de-risk-this)
+18. [Testing](#testing)
+19. [Repo layout](#repo-layout)
+20. [License](#license)
 
 ---
 
@@ -477,6 +485,7 @@ All are `platform: shelly_wall_dimmer` with a `type:`, and all are `config`-cate
 | `min_brightness` | 0–100 % | 1 | Low end of the mapped window. |
 | `max_brightness` | 0–100 % | 100 | High end of the mapped window. |
 | `ramp_rate` | 1–1000 %/s | 150 | One shared speed for every ramp. Cannot be zero. |
+| `overtemp_limit` | 40–85 °C | 75 | Above this reported co-processor temperature, the output is switched off. See [Thermal cutout](#thermal-cutout). |
 
 **Range mapping.** `min`/`max` don't clamp, they **stretch**. Home Assistant 0 % maps to `min`, 100 % maps to `max`, linear in between, and device reports map back so HA still reads 0–100 %. So `min=20, max=80` gives 0→20, 50→50, 100→80. The defaults (1/100) are effectively a no-op. `kick_level` is always in real device terms, not mapped.
 
@@ -501,6 +510,7 @@ All are `platform: shelly_wall_dimmer` with a `type:`. They persist the same way
 | `sensor` | — | Co-processor die temperature in °C. Believed to be the sensor on the TRIAC, though that isn't confirmed — the co-processor reports it and it's taken at face value. |
 | `text_sensor` | `last_frame` | The latest raw status frame as hex. Diagnostic. |
 | `text_sensor` | `mcu_version` | Co-processor firmware version from its boot banner, e.g. `shelly_apt_003 mcu ver: v1.0.4`. |
+| `binary_sensor` | `overtemp` | `problem` class. On while the thermal cutout is holding the output off. |
 
 ### Local hardware: button and LEDs
 
@@ -530,6 +540,22 @@ With kick off, a turn-on jumps straight to target, or fades up from 0 if `ramp_o
 **Ramps.** `ramp_rate` is in percent per second. The firmware converts it to a fixed step cadence, quantized to a 10 ms floor — about one mains half-cycle, since the TRIAC can only act once per half-cycle (8.33 ms at 60 Hz) and finer steps buy nothing. There is no dithering: one step size, one interval, and a partial final step lands exactly on the setpoint.
 
 **Transitions.** `light.turn_on ... transition: Ns` ramps over exactly that duration using our engine rather than ESPHome's, so the two don't fight. It composes with the kick: the strike stays instant, and the requested duration covers the ramp after it.
+
+---
+
+## Thermal cutout
+
+Above the temperature the co-processor reports, the output is **switched off and held off** until it cools. Nothing turns it back on by itself — clearing the condition only permits a turn-on, it does not perform one, so a thermal event stays visible rather than quietly cycling.
+
+While it is tripped, nothing can turn the light on: not Home Assistant, not an automation, not the wall button. The touch panel talks to the co-processor directly, so if someone switches the light on physically during a trip, the firmware puts it back off.
+
+**This is an additional layer, not the only one.** A thermal cutoff is bonded to the TRIAC in hardware. Neither the co-processor nor stock's ESP32 firmware acts on temperature — stock only reports it, confirmed by disassembly — so this adds a protection rather than replacing one.
+
+**The firmware owns the envelope.** `overtemp_limit` is a Home Assistant entity so you can tighten it without a reflash, but the clamp is one-directional: a value above the firmware ceiling (85 °C) is clamped down on the device, and there is no runtime switch to disable the cutout. Home Assistant can make it stricter, never weaker. The check runs in the device's main loop off the UART status frame, so it works with Wi-Fi down, the API disconnected, or Home Assistant switched off entirely.
+
+**On the default.** It is not a thermal model and does not need to be accurate — it exists to catch a runaway, so it sits far above anything normal and far below anything that damages parts. Measured on this hardware: 25–27 °C idle, ~29 °C after hours at 24 %. Typical weakest-link ratings in this class are 85 °C. 75 °C is roughly 46 °C above anything observed and 10 °C under the assumed part limit.
+
+> The default is **provisional**. It was chosen before the device was characterized at full brightness into a heavy load. Run your heaviest fixture at 100 % for an hour, watch the temperature sensor, and tighten the limit if the headroom is smaller than it looks.
 
 ---
 
@@ -733,7 +759,9 @@ Stated plainly, because a de-risking section that lists only successes isn't one
 - **Power loss during a boot-record write** is mitigated by design (single-copy writes, the other copy always valid) but has not been empirically tested.
 - **Restoring stock after the fallback slot is overwritten is untested** — see [Getting back to stock](#getting-back-to-stock-untested).
 - **One hardware variant.** US SKU, one board revision, four units — and that field time belongs to the builds that were actually installed, not automatically to the current release. See [Releases and stability](#releases-and-stability).
-- **Co-processor fault flags are not surfaced.** Temperature is read; the second status bit remains undecoded and unused. Stock's overtemp / no-load / non-dimmable handling is not reproduced.
+- **Only temperature is acted on.** It drives the [thermal cutout](#thermal-cutout). The second status bit remains undecoded and unused, and the richer conditions stock's shared code names (no-load, non-dimmable, over-current) are simply not present in this device's 3-byte status reply, so they cannot be detected at all.
+- **A dead co-processor link is reported, not acted on.** There is no reset line to the co-processor, so there is no action available: if it stops responding we cannot command it or restart it.
+- **The thermal limit is provisional** — chosen before characterization at full load. See [Thermal cutout](#thermal-cutout).
 - **The ESPHome integration layer has no automated coverage.** What is tested is the engine, the frame parser, the boot records and the packaging. The glue binding them to Home Assistant entities is covered by bring-up and daily field use, not by tests.
 - **A committed slot with a broken image does not self-recover.** Committing is what makes an image permanent, and the bootloader will loop on it forever rather than fall back. This firmware only auto-commits after an image has run healthily for 30 s, which is what keeps that safe.
 
