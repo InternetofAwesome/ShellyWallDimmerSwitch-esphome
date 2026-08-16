@@ -687,9 +687,19 @@ static void test_overtemp() {
     r.clear();
   };
 
+  // The shipped default is deliberately conservative. Pinned so a change to it
+  // is a deliberate act rather than a side effect.
+  {
+    Rig r;
+    CHECK(r.p().overtemp_limit_c == 65, "default limit errs low (65 C) while provisional");
+    CHECK(r.p().overtemp_limit_c < OVERTEMP_LIMIT_MAX_C,
+          "the default sits below the firmware ceiling");
+  }
+
   // Above the limit: the output is commanded off.
   {
     Rig r; lit(r);
+    r.p().overtemp_limit_c = 75;
     r.e.notify_temperature(76);
     CHECK(!g_tx.empty(), "over the limit emits a command");
     CHECK(!g_tx.empty() && !byte_on(g_tx.back()), "over the limit commands the output OFF");
@@ -700,6 +710,7 @@ static void test_overtemp() {
   // Exactly at the limit is not over it.
   {
     Rig r; lit(r);
+    r.p().overtemp_limit_c = 75;
     r.e.notify_temperature(75);
     CHECK(g_tx.empty(), "at the limit exactly, nothing happens");
     CHECK(!r.e.overtemp(), "at the limit the cutout does not latch");
@@ -708,6 +719,7 @@ static void test_overtemp() {
   // While hot, nothing may turn it back on -- HA, automation or wall button.
   {
     Rig r; lit(r);
+    r.p().overtemp_limit_c = 75;
     r.e.notify_temperature(90);
     r.clear();
     r.req(true, 50);
@@ -721,6 +733,7 @@ static void test_overtemp() {
   // Off is always allowed through.
   {
     Rig r; lit(r);
+    r.p().overtemp_limit_c = 75;
     r.e.notify_temperature(90);
     r.clear();
     r.req(false, 0);
@@ -730,6 +743,7 @@ static void test_overtemp() {
   // Cooling clears the latch but must NOT restore the light by itself.
   {
     Rig r; lit(r);
+    r.p().overtemp_limit_c = 75;
     r.e.notify_temperature(90);
     r.clear();
     r.e.notify_temperature(60);
@@ -743,6 +757,7 @@ static void test_overtemp() {
   // during a thermal event must be undone, not merely observed.
   {
     Rig r; lit(r);
+    r.p().overtemp_limit_c = 75;
     r.e.notify_temperature(90);
     r.clear();
     r.status(70, true);  // co-processor reports the output back ON
@@ -773,6 +788,7 @@ static void test_overtemp() {
   // Disabling the protection releases the latch and permits control again.
   {
     Rig r; lit(r);
+    r.p().overtemp_limit_c = 75;
     r.e.notify_temperature(90);
     CHECK(r.e.overtemp(), "latched while enabled");
     r.p().overtemp_protect = false;

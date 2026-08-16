@@ -47,22 +47,32 @@ struct DimmerParams {
   // Deliberately not a thermal model and deliberately not an attempt to infer
   // what the co-processor is doing: the limit sits far above anything normal
   // and far below anything that damages parts, so it catches a runaway without
-  // needing to be accurate. Measured on this hardware: 25-27 C idle, ~29 C
-  // after hours at 24% load. Typical weakest-link ratings in this class are
-  // 85 C (industrial MCUs, electrolytics), TRIAC junctions higher. 75 C is
-  // ~46 C above anything observed and ~10 C below the assumed part limit.
+  // needing to be accurate.
+  //
+  // The default is 65 C, not the 75 C first proposed, because the number is
+  // still PROVISIONAL and an unverified thermal limit should err low. Tripping
+  // early costs light; tripping late costs hardware.
+  //
+  // Measured so far: 25-27 C idle, ~29 C after hours at 24% load. That is a
+  // weak data point, because 24% is nowhere near worst case -- see below.
+  // Typical weakest-link ratings in this class are 85 C (industrial MCUs,
+  // electrolytics), with TRIAC junctions higher.
+  //
+  // CHARACTERIZING THIS PROPERLY: worst-case dissipation in a phase-cut dimmer
+  // is at MID-RANGE brightness, around 50%, NOT at full brightness. The device
+  // switches at the instantaneous mains voltage, which is at its peak around a
+  // 90-degree firing angle; at full conduction it switches at the zero crossing
+  // where switching loss approaches zero. So testing at 100% measures close to
+  // the BEST case and yields falsely reassuring headroom. Sweep the range with
+  // the heaviest fixture and dwell at mid-range.
   //
   // This is an ADDITIONAL layer, not the only one: a thermal cutoff is bonded
   // to the TRIAC in hardware. Neither the co-processor nor stock's ESP32
   // firmware acts on temperature -- stock only reports it, confirmed by
   // disassembly -- so nothing here replaces a protection that already existed.
   //
-  // The default is provisional until the device is characterized at full
-  // brightness into a heavy load; it is a live HA entity so it can be corrected
-  // without a reflash.
-  // NOT exposed as a runtime entity on purpose -- see OVERTEMP_LIMIT_MAX_C.
   bool overtemp_protect = true;
-  uint8_t overtemp_limit_c = 75;  // above this, command the output off
+  uint8_t overtemp_limit_c = 65;  // above this, command the output off
 };
 
 // Hard ceiling on the cutout, enforced in firmware and not settable from

@@ -200,14 +200,16 @@ number:
   # SAFETY: above this co-processor temperature the output is switched off and
   # held off until it cools. Belt-and-suspenders in front of the TRIAC's own
   # hardware thermal cutoff -- neither the co-processor nor stock's firmware
-  # acts on temperature. 75 C is far above anything measured (25-27 C idle,
-  # ~29 C after hours at 24%) and below typical 85 C part ratings. Provisional
-  # until characterized at full brightness into a heavy load.
+  # acts on temperature. Measured: 25-27 C idle, ~29 C after hours at 24%;
+  # typical weakest-link part ratings in this class are 85 C. 65 C errs low
+  # because the number is still provisional. To characterize, sweep with your
+  # heaviest fixture and dwell at MID-RANGE (~50%), which is worst case for a
+  # phase-cut dimmer -- not 100%, where switching loss approaches zero.
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: overtemp_limit
     name: "Over-temp Limit"
-    initial_value: 75      # 40-85 C; the firmware clamps to 85 regardless
+    initial_value: 65      # 40-85 C; the firmware clamps to 85 regardless
   # (The optional `raw_tx_byte` diagnostic number belongs here -- see
   # "RAW-SEND PROTOCOL TOOL" near the bottom of this file for both halves.)
 

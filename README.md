@@ -485,7 +485,7 @@ All are `platform: shelly_wall_dimmer` with a `type:`, and all are `config`-cate
 | `min_brightness` | 0–100 % | 1 | Low end of the mapped window. |
 | `max_brightness` | 0–100 % | 100 | High end of the mapped window. |
 | `ramp_rate` | 1–1000 %/s | 150 | One shared speed for every ramp. Cannot be zero. |
-| `overtemp_limit` | 40–85 °C | 75 | Above this reported co-processor temperature, the output is switched off. See [Thermal cutout](#thermal-cutout). |
+| `overtemp_limit` | 40–85 °C | 65 | Above this reported co-processor temperature, the output is switched off. See [Thermal cutout](#thermal-cutout). |
 
 **Range mapping.** `min`/`max` don't clamp, they **stretch**. Home Assistant 0 % maps to `min`, 100 % maps to `max`, linear in between, and device reports map back so HA still reads 0–100 %. So `min=20, max=80` gives 0→20, 50→50, 100→80. The defaults (1/100) are effectively a no-op. `kick_level` is always in real device terms, not mapped.
 
@@ -551,11 +551,13 @@ While it is tripped, nothing can turn the light on: not Home Assistant, not an a
 
 **This is an additional layer, not the only one.** A thermal cutoff is bonded to the TRIAC in hardware. Neither the co-processor nor stock's ESP32 firmware acts on temperature — stock only reports it, confirmed by disassembly — so this adds a protection rather than replacing one.
 
-**The firmware owns the envelope.** `overtemp_limit` is a Home Assistant entity so you can tighten it without a reflash, but the clamp is one-directional: a value above the firmware ceiling (85 °C) is clamped down on the device, and there is no runtime switch to disable the cutout. Home Assistant can make it stricter, never weaker. The check runs in the device's main loop off the UART status frame, so it works with Wi-Fi down, the API disconnected, or Home Assistant switched off entirely.
+**The firmware owns the envelope.** `overtemp_limit` is a Home Assistant entity so you can tighten it without a reflash, but the clamp is one-directional: a value above the firmware ceiling (85 °C, the assumed weakest-link part rating) is clamped down on the device, and there is no runtime switch to disable the cutout. Home Assistant can make it stricter, never weaker. The check runs in the device's main loop off the UART status frame, so it works with Wi-Fi down, the API disconnected, or Home Assistant switched off entirely.
 
-**On the default.** It is not a thermal model and does not need to be accurate — it exists to catch a runaway, so it sits far above anything normal and far below anything that damages parts. Measured on this hardware: 25–27 °C idle, ~29 °C after hours at 24 %. Typical weakest-link ratings in this class are 85 °C. 75 °C is roughly 46 °C above anything observed and 10 °C under the assumed part limit.
+**On the default.** It is not a thermal model and does not need to be accurate — it exists to catch a runaway, so it sits far above anything normal and far below anything that damages parts. Measured on this hardware: 25–27 °C idle, ~29 °C after hours at 24 % load. Typical weakest-link ratings in this class are 85 °C, which is also the firmware ceiling.
 
-> The default is **provisional**. It was chosen before the device was characterized at full brightness into a heavy load. Run your heaviest fixture at 100 % for an hour, watch the temperature sensor, and tighten the limit if the headroom is smaller than it looks.
+The default is **65 °C**, below the 85 °C ceiling, and it errs low deliberately: the number is provisional, and an unverified thermal limit should fail early rather than late. Tripping early costs you light. Tripping late costs hardware.
+
+**If you characterize it, do it at mid-range, not full brightness.** Worst-case dissipation in a phase-cut dimmer is around **50 %**, where the device switches at the peak of the mains waveform. At full conduction it switches at the zero crossing and switching loss approaches zero — so an hour at 100 % measures close to the *best* case and gives falsely reassuring headroom. Sweep the range with your heaviest fixture, dwell at mid-range, and watch the temperature sensor.
 
 ---
 
@@ -761,7 +763,7 @@ Stated plainly, because a de-risking section that lists only successes isn't one
 - **One hardware variant.** US SKU, one board revision, four units — and that field time belongs to the builds that were actually installed, not automatically to the current release. See [Releases and stability](#releases-and-stability).
 - **Only temperature is acted on.** It drives the [thermal cutout](#thermal-cutout). The second status bit remains undecoded and unused, and the richer conditions stock's shared code names (no-load, non-dimmable, over-current) are simply not present in this device's 3-byte status reply, so they cannot be detected at all.
 - **A dead co-processor link is reported, not acted on.** There is no reset line to the co-processor, so there is no action available: if it stops responding we cannot command it or restart it.
-- **The thermal limit is provisional** — chosen before characterization at full load. See [Thermal cutout](#thermal-cutout).
+- **The thermal limit is provisional.** It is set low (65 °C) on purpose, but it has not been validated against a real thermal sweep, and the only load data so far is a single point at 24 % — well away from the ~50 % worst case. See [Thermal cutout](#thermal-cutout).
 - **The ESPHome integration layer has no automated coverage.** What is tested is the engine, the frame parser, the boot records and the packaging. The glue binding them to Home Assistant entities is covered by bring-up and daily field use, not by tests.
 - **A committed slot with a broken image does not self-recover.** Committing is what makes an image permanent, and the bootloader will loop on it forever rather than fall back. This firmware only auto-commits after an image has run healthily for 30 s, which is what keeps that safe.
 
