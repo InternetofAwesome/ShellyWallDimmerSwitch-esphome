@@ -118,10 +118,13 @@ void ShellyWallDimmer::handle_status_frame_(const ::shelly_dimmer_core::StatusFr
   // Push the engine's resulting state to HA, but only on an actual change --
   // the co-processor only streams frames when something changed anyway, but
   // our own CMD_POLL replies can repeat the same values.
-  // Publish on the HA 0-100 scale: current_brightness_ha() inverse-maps the
+  // Publish on the HA 0-100 scale: publish_brightness_ha() inverse-maps the
   // device brightness back through the min/max window so HA shows 0-100 even
-  // though the wire value is stretched into [min,max].
-  this->maybe_publish_light_state_(this->engine_.current_brightness_ha(), this->engine_.is_on());
+  // though the wire value is stretched into [min,max]. It is deliberately NOT
+  // current_brightness_ha(): that saturates to 0 at or below min_brightness,
+  // and a 0 brightness published with state=on is rewritten by ESPHome into a
+  // turn-off, which would switch off a lamp the co-processor reports as lit.
+  this->maybe_publish_light_state_(this->engine_.publish_brightness_ha(), this->engine_.is_on());
 }
 
 void ShellyWallDimmer::maybe_publish_light_state_(uint8_t brightness_pct, bool on) {

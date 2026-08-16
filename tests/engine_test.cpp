@@ -407,6 +407,72 @@ static void test_noop() {
   }
 }
 
+// ---- publish floor: never report "on at 0%" --------------------------------
+// Regression test for a real defect. ESPHome's LightCall::validate_() rewrites
+// ANY zero brightness into an explicit state=false; that turn-off round-trips
+// through write_state() and puts an OFF byte on the wire. map_to_ha() saturates
+// to 0 at or below min_brightness, so a lamp the co-processor reports as LIT
+// was being switched off by our own state reflection. publish_brightness_ha()
+// floors the published value at 1 while the output is on, and request() treats
+// that floored value as a reflection rather than a new command.
+static void test_publish_floor() {
+  group("publish-floor");
+
+  struct Case { uint8_t lo, hi, real; const char *what; };
+  const Case cases[] = {
+      {1, 100, 1, "shipped default min=1, touch at the bottom of the strip"},
+      {20, 80, 10, "touch below a configured min"},
+      {20, 80, 20, "device sitting exactly on min"},
+      {20, 25, 20, "narrow window, at min"},
+      {50, 50, 50, "degenerate window (min == max)"},
+      {60, 40, 50, "inverted window (min > max)"},
+  };
+
+  for (const auto &c : cases) {
+    Rig r;
+    r.p().min_brightness = c.lo;
+    r.p().max_brightness = c.hi;
+    r.p().kick_enabled = false;
+    r.p().limit_correct = false;
+    r.status(c.real, true);  // co-processor reports the output ON at c.real
+
+    CHECK(r.e.is_on(), c.what);
+    CHECK(r.e.publish_brightness_ha() != 0,
+          "published brightness is never 0 while on (0 would be read as OFF)");
+
+    // Feed exactly what we would publish back in, the way the light layer does.
+    r.clear();
+    r.req(true, r.e.publish_brightness_ha());
+    CHECK(g_tx.empty(), "publishing our own state does not command the device");
+    CHECK(r.e.is_on(), "reflection leaves the output on");
+  }
+
+  // While OFF, no floor is applied -- the wrapper does not send a brightness at
+  // all in that case, and clamping here would misreport the stored level.
+  {
+    Rig r;
+    r.p().min_brightness = 20;
+    r.p().max_brightness = 80;
+    r.status(10, false);
+    CHECK(!r.e.is_on(), "off state reported off");
+    CHECK(r.e.publish_brightness_ha() == 0, "no floor applied while off");
+  }
+
+  // The floor must not mask a genuine command that differs from the reflection.
+  {
+    Rig r;
+    r.p().min_brightness = 20;
+    r.p().max_brightness = 80;
+    r.p().kick_enabled = false;
+    r.p().ramp_on_change = false;
+    r.status(10, true);  // out of window
+    r.clear();
+    r.req(true, 50);  // a real HA command
+    CHECK(!g_tx.empty(), "a genuine command still reaches the wire");
+    CHECK(r.last_on() && r.last_bri() == 50, "and lands on the mapped level");
+  }
+}
+
 int main() {
   test_range_mapping();
   test_kick();
@@ -414,6 +480,7 @@ int main() {
   test_off();
   test_transition();
   test_noop();
+  test_publish_floor();
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

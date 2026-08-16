@@ -66,6 +66,24 @@ class DimmerEngine {
   uint8_t current_brightness() const { return current_; }
   uint8_t current_brightness_ha() const { return map_to_ha(current_); }
   bool is_on() const { return on_; }
+
+  // The HA-scale brightness a wrapper should PUBLISH for the current state.
+  // Use this, not current_brightness_ha(), for anything that reaches a
+  // light entity.
+  //
+  // Never returns 0 while the output is on. ESPHome's LightCall::validate_()
+  // rewrites any zero brightness into an explicit state=false, which comes back
+  // through write_state() as a turn-off and puts an OFF byte on the wire -- so
+  // publishing 0 for a lamp that is lit switches it off. map_to_ha() saturates
+  // to 0 for any device level at or below min_brightness, which is reachable
+  // three ways: a touch-plate move under the window, a target that lands exactly
+  // on min, or a degenerate min>=max window (where EVERY level maps to 0). The
+  // floor lives here rather than in map_to_ha() so the mapping stays a clean
+  // inverse and only the publish path is constrained.
+  uint8_t publish_brightness_ha() const {
+    uint8_t ha = map_to_ha(current_);
+    return (on_ && ha == 0) ? 1 : ha;
+  }
   bool busy() const { return mode_ != Mode::IDLE; }
 
   // Same as request(), but ramp to the target over EXACTLY transition_ms instead
@@ -114,6 +132,14 @@ class DimmerEngine {
       uint8_t bdev = map_to_device(bha);
       if (!want_on && !on_) return;
       if (want_on && on_ && bdev == current_) return;
+      // Reflection of an OUT-OF-WINDOW device level. The round-trip above is an
+      // identity only for levels inside [min,max]; below min (a touch move under
+      // the window) map_to_ha() saturates and publish_brightness_ha() floors at
+      // 1, so the value we published does NOT map back to current_. Without this
+      // second test, echoing our own published state would re-command the lamp
+      // up into the window -- that is limit_correct's job, and it is off by
+      // default. Compare against exactly what we publish, closing the loop.
+      if (want_on && on_ && bha == publish_brightness_ha()) return;
     }
     // OFF: fade to black then off (ramp_on_off), or immediate off. The immediate
     // path preserves the brightness bits so a later on can restore the level.
