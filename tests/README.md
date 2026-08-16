@@ -156,6 +156,21 @@ wire. Groups:
   (step > 1 rate); and `ramp_on_change: off` jumps instantly.
 - **off** — an immediate off preserves the brightness bits (the falsifiable wire
   prediction), and a fade-out ramps to 0 before sending the off command.
+- **overtemp** — the thermal cutout: trips above the limit and switches the
+  output off, does not trip at the limit exactly, refuses every turn-on path
+  while hot (Home Assistant, an explicit transition, and the wall button) while
+  still allowing off, aborts a ramp in flight, forces the output back off when
+  the touch panel turns it on during a trip, clears on cooling **without**
+  auto-restoring, and clamps a configured limit down to the firmware ceiling so
+  nothing off-device can widen the safety envelope.
+- **wire-format** — the command encoding (including that an unclamped 128 would
+  alias into the on/off bit), plus a 288-combination sweep asserting no byte
+  ever leaves 0..100 and no turn-on sequence emits a spurious OFF.
+- **parser** — framing, payload bytes that happen to equal SOF/EOF, bad EOF,
+  the SOF-restart resync, mid-stream recovery, boot-banner capture, and the
+  mid-frame banner truncation pinned as a known limitation.
+- **publish-floor** — a lit lamp is never reported to Home Assistant at 0%
+  brightness, which ESPHome would rewrite into an explicit off.
 - **no-op** — a device report reflected back through the light layer does not
   re-command the co-processor.
 

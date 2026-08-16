@@ -15,7 +15,8 @@ DimmerNumber = shelly_wall_dimmer_ns.class_(
 )
 DimmerNumberType = shelly_wall_dimmer_ns.enum("DimmerNumberType", is_class=True)
 
-# type -> (enum value, min, max, step, default)   -- ranges/defaults per BEHAVIOR.md
+# type -> (enum value, min, max, step, default). Ranges and defaults are
+# documented in the README's Option reference.
 # The default is a FIRST-BOOT fallback only: every value set from HA is stored in
 # NVS and restored on the next boot, so tuning survives reboots and OTA updates.
 # Override it per entity with `initial_value:` (see _default_initial_value below).

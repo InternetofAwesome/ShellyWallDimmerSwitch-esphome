@@ -356,6 +356,11 @@ number:
     type: ramp_rate
     name: "Ramp Rate"
     initial_value: 150
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer
+    type: overtemp_limit
+    name: "Over-temp Limit"
+    initial_value: 65
 
 switch:
   - platform: shelly_wall_dimmer
@@ -388,6 +393,12 @@ sensor:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer
     name: "Temperature"
+
+binary_sensor:
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer
+    type: overtemp
+    name: "Over-temperature"
 
 text_sensor:
   - platform: shelly_wall_dimmer
@@ -770,7 +781,7 @@ Stated plainly, because a de-risking section that lists only successes isn't one
 <a name="footnote-a"></a>
 <sup>**a**</sup> Needs QEMU plus stock firmware images, which this repo does not redistribute. `make stock-fw` fetches them from Shelly's CDN and verifies them against content hashes. These targets skip cleanly without them.
 <a name="footnote-b"></a>
-<sup>**b**</sup> Bench-verified with hardware and a logic analyzer; not reproducible from this repo alone. See [PROTOCOL.md](PROTOCOL.md) and [BEHAVIOR.md](BEHAVIOR.md).
+<sup>**b**</sup> Bench-verified with hardware and a logic analyzer; not reproducible from this repo alone. See [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
@@ -783,7 +794,7 @@ cd tests && make            # everything
 cd tests && make stock-fw   # one-time: fetch stock images for the QEMU layers
 ```
 
-**Engine + parser** (`make engine`) — the kick/ramp/range-mapping logic and the status-frame parser are standalone pure C++, so 1,629 assertions drive the *real* code with nothing but a compiler and check the exact bytes it puts on the wire: range mapping and a round-trip stability sweep, the single-pivot kick, ramp cadence / partial-step / no-overshoot, off-preserves-brightness-bits, fade-out, the no-op reflection guard, the publish floor that stops a lit lamp being reported as off, parser framing / resync / boot-banner handling, and a wire-format sweep asserting no command byte ever leaves the 0-100 range and no turn-on sequence ever emits a spurious OFF.
+**Engine + parser** (`make engine`) — the kick/ramp/range-mapping logic and the status-frame parser are standalone pure C++, so 1,658 assertions drive the *real* code with nothing but a compiler and check the exact bytes it puts on the wire: range mapping and a round-trip stability sweep, the single-pivot kick, ramp cadence / partial-step / no-overshoot, off-preserves-brightness-bits, fade-out, the no-op reflection guard, the publish floor that stops a lit lamp being reported as off, parser framing / resync / boot-banner handling, and a wire-format sweep asserting no command byte ever leaves the 0-100 range and no turn-on sequence ever emits a spurious OFF.
 
 **Bridge package** (`make bridge`) — asserts the first-flash package can never write onto the fallback app slot or the partition table, checked against every known stock layout. Its opt-in QEMU layer assembles a 2.0.0-shaped flash, applies the package, and boots it against the **real Shelly bootloader**.
 
@@ -797,6 +808,7 @@ See [`tests/README.md`](tests/README.md). What none of them reach — the ESPHom
 
 - `components/shelly_wall_dimmer/` — the main ESPHome component.
 - `components/status_led_pwm/` — small light platform: a dimmable PWM status LED that blinks on ESPHome's warning/error state.
+- `PROTOCOL.md` — the ESP32↔co-processor wire protocol, as reverse-engineered and bench-confirmed.
 - `example/` — a fully commented device config plus `secrets.yaml.example`.
 - `tests/` — engine and parser unit tests, bridge-package safety tests, and the boot matrix.
 

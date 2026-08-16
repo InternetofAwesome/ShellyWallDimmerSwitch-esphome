@@ -3,7 +3,8 @@
 // Wall Dimmer. Pure C++ (no ESPHome deps). Driven by tick(now_ms) and a
 // send-byte callback; the ESPHome wrapper wires the callback to the UART,
 // feeds it status frames, and exposes the parameters as HA number entities.
-// See BEHAVIOR.md for the behavioural spec.
+// The behavioural contract (kick, ramp cadence, range mapping, thermal
+// cutout) is documented in the README; the wire protocol is in PROTOCOL.md.
 
 #include <cstdint>
 #include "dimmer_protocol.h"

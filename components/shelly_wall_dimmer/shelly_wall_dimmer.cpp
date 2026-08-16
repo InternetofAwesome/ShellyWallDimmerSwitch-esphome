@@ -107,7 +107,7 @@ void ShellyWallDimmer::handle_status_frame_(const ::shelly_dimmer_core::StatusFr
   }
 
   // Let the engine reconcile: it only adopts this as new truth when it isn't
-  // mid-command (kick/ramp in flight), per BEHAVIOR.md's "manual override"
+  // mid-command (kick/ramp in flight), per the README's manual-override
   // rule -- this is what keeps us from fighting our own output.
   this->engine_.notify_status(frame.brightness, frame.output_on, millis());
 
