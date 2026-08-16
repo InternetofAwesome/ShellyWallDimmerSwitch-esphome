@@ -183,14 +183,29 @@ class BootState {
   // Mark the currently-booted (winning) slot committed: c=1, mfs(bit1)=0,
   // active slot unchanged, AND ba:=0.
   //
-  // BENCH-CONFIRMED CORRECTION: writing only ctrl0=(as<<4)|1 (ba left at 2) does
-  // NOT commit. The bootloader treats any record with ba>0 as a PENDING boot
-  // regardless of c: it boots the slot, decrements ba, and clears c back to 0.
-  // Observed live: commit -> reboot gave c=0/ba=1, and with ba left counting it
-  // went 2->1->0 and reverted to stock. A committed record needs ba=0 -- which
-  // is exactly stock's own resting boot_state.bin (ctrl0=0x01, ctrl1=0x01 =
-  // c=1, ba=0, rs=1). Zeroing ba here stops the rollback countdown. rs is
-  // preserved so a later revert still knows the fallback slot.
+  // ba is zeroed to match stock's own resting record exactly (boot_state.bin:
+  // ctrl0=0x01, ctrl1=0x01 = c=1, ba=0, rs=1). rs is preserved so a later
+  // revert still knows the fallback slot.
+  //
+  // RETRACTED CLAIM, left here because it caused real debugging pain: this
+  // comment used to assert that the bootloader "treats any record with ba>0 as a
+  // PENDING boot regardless of c -- boots the slot, decrements ba, and clears c
+  // back to 0", and that zeroing ba was therefore MANDATORY for a commit to
+  // stick. That is FALSE. Verified against the real bootloader under QEMU on
+  // both shipped builds (1.0.0/IDF 4.4.4-a9 from the 1.3.3 package and
+  // 1.0.3/IDF 5.5.2-s6 from 2.0.0), with a matched c=0 control in the same rig:
+  //     c=1, ba=3 -> "Booting app 0" every boot, ZERO otadata writes, ba stays 3
+  //     c=0, ba=3 -> "Uncommitted boot (attempts 3)", ba 3->2->1->0, then
+  //                  "App 0 failed to boot, reverting to 1"
+  // So c=1 makes the bootloader ignore ba entirely, exactly as the original
+  // static analysis said. The live observation that produced the wrong claim was
+  // from the PRE-CRC era: those writes were rejected wholesale (stale CRCs), so
+  // the ORIGINAL uncommitted record kept winning and counting down. The
+  // countdown was never the new record being reinterpreted -- it was the new
+  // record never being accepted. See tests/boot_matrix_test.py.
+  //
+  // Consequence: zeroing ba here is correct but not load-bearing, and
+  // revert_to_stock() preserving ba is safe.
   bool commit() {
     return mutate_([](uint8_t &ctrl0, uint8_t &ctrl1, const BootStateView &w) {
       ctrl0 = (uint8_t) ((w.as << 4) | 0x01);  // as unchanged, c=1, mfs=0, bit2=0, bit3=0
@@ -201,6 +216,13 @@ class BootState {
   // Hand control back to stock: swap active<->revert and commit, mirroring the
   // bootloader's own revert (bl 0x40080f16): as:=rs, c:=1, keep bits2-3, and
   // old as becomes the new rs. ba preserved. Next boot runs the stock slot.
+  //
+  // Preserving ba is safe even when this is pressed during the uncommitted
+  // window (where the winner may carry ba=3): c=1 makes the bootloader ignore
+  // ba, so the reverted slot boots indefinitely rather than counting back down
+  // and bouncing to the slot we just left. QEMU-verified on both bootloader
+  // builds -- see the retracted-claim note in commit() and
+  // tests/boot_matrix_test.py.
   bool revert_to_stock() {
     return mutate_([](uint8_t &ctrl0, uint8_t &ctrl1, const BootStateView &w) {
       ctrl0 = (uint8_t) ((w.rs << 4) | 0x01 | (w.ctrl0 & 0x0c));
