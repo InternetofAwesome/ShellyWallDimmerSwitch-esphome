@@ -204,7 +204,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0-alpha   # not published yet -- see Releases and stability
+      ref: v1.0.0-alpha-01   # see Releases and stability for what -alpha means
     components: [shelly_wall_dimmer, status_led_pwm]
 
 # UART to the dimming co-processor. These pins are not negotiable.
@@ -282,7 +282,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0-alpha   # not published yet -- see Releases and stability
+      ref: v1.0.0-alpha-01   # see Releases and stability for what -alpha means
     refresh: 1d
     components: [shelly_wall_dimmer, status_led_pwm]
 
@@ -394,12 +394,6 @@ sensor:
     shelly_wall_dimmer_id: dimmer
     name: "Temperature"
 
-binary_sensor:
-  - platform: shelly_wall_dimmer
-    shelly_wall_dimmer_id: dimmer
-    type: overtemp
-    name: "Over-temperature"
-
 text_sensor:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer
@@ -411,6 +405,10 @@ text_sensor:
     name: "MCU Version"
 
 binary_sensor:
+  - platform: shelly_wall_dimmer     # over-temp cutout state
+    shelly_wall_dimmer_id: dimmer
+    type: overtemp
+    name: "Over-temperature"
   - platform: gpio                   # front tactile button
     name: "Button"
     pin:
@@ -618,15 +616,20 @@ If you are here looking for where this goes wrong, start with
 
 ## Releases and stability
 
-**A tagged release has run on real hardware.** Every tag means that exact build was
-flashed to an actual dimmer and used in a real installation — not that its tests went
-green. The test suite is necessary and it is not sufficient; nothing gets tagged on
-passing CI alone. Tags are immutable, so what you pin is what you get.
+Three levels, and the difference matters before you put one in a wall.
 
-**Everything else is unstable.** That explicitly includes the tip of `master`: it may be
-mid-refactor, it may be partially tested, and **it may never have been run on real
-hardware.** Commits land here continuously and there is no commitment that any given
-push has been flashed to a physical dimmer.
+**A full release — a tag with no suffix — has run on real hardware.** That exact
+build was flashed to an actual dimmer and used in a real installation. Passing tests
+is necessary and never sufficient: nothing earns an unsuffixed tag on green CI alone.
+
+**An `-alpha` tag is a test candidate.** It exists precisely so it can be tested — by
+the author first, and by you if you choose to. It has passed the full suite, and that
+is all you may assume. It may never have been switched on. **If you install an alpha,
+you are testing it, at your own peril**, on a mains device in your wall.
+
+**Everything untagged is unstable**, `master` included: possibly mid-refactor,
+possibly half-finished, quite possibly never run. Commits land continuously and no
+push carries any commitment whatsoever.
 
 So pin `external_components` to a tag:
 
@@ -635,12 +638,9 @@ So pin `external_components` to a tag:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
       ref: v0.0.0          # a release tag, not `master`
+                           # a bare tag has been on hardware; -alpha has not
     refresh: 1d
 ```
-
-A pre-release suffix (`-alpha`, `-beta`) does **not** mean untested — it still ran on
-hardware, or it would not have been tagged. It means there is not much real-world time
-behind it yet: few units, few days, and corners that have not come up in daily use.
 
 Field time on the author's own switches accrues to the specific builds that were
 installed on them. It does not transfer forward to a release automatically, and this

@@ -44,7 +44,7 @@ external_components:
       # fail to resolve -- deliberately. A hard fetch error is the right
       # outcome for an unreleased project; silently installing the tip of
       # master onto a mains device is not. See "Releases and stability".
-      ref: v1.0.0-alpha
+      ref: v1.0.0-alpha-01
     refresh: 1d
     components: [shelly_wall_dimmer, status_led_pwm]
 
@@ -259,13 +259,6 @@ sensor:
     shelly_wall_dimmer_id: dimmer_coprocessor
     name: "Temperature"
 
-# Goes `problem` when the over-temp cutout has switched the output off.
-binary_sensor:
-  - platform: shelly_wall_dimmer
-    shelly_wall_dimmer_id: dimmer_coprocessor
-    type: overtemp
-    name: "Over-temperature"
-
 text_sensor:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
@@ -359,6 +352,11 @@ text_sensor:
 #       though swapped, exchange the pin numbers. Cosmetic only, never harmful.
 
 binary_sensor:
+  # Goes `problem` when the over-temp cutout has switched the output off.
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: overtemp
+    name: "Over-temperature"
   # Front tactile button ("key" net) on GPIO4. Preemptive path: a tap runs
   # through our engine via light.toggle, so turn-on gets the kick.
   - platform: gpio
