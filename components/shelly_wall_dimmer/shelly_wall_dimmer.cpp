@@ -23,6 +23,24 @@ void ShellyWallDimmer::setup() {
     this->boot_state_layout_ok_ = bs.layout_ok();
   }
 
+  if (this->button_pin_ != nullptr) {
+    this->button_pin_->setup();
+    this->button_.isr_pin_ = this->button_pin_->to_isr();
+    // RISING is the LOGICAL edge: ESP32's gpio.cpp flips the IDF edge type for an
+    // inverted pin, and to_isr() carries `inverted` through to digital_read(), so
+    // both this and the re-arm check below read "pressed" regardless of whether
+    // the board wires the button active-low or active-high. `inverted:` in the
+    // YAML stays the single polarity knob.
+    this->button_pin_->attach_interrupt(&ButtonStore::intr, &this->button_,
+                                        gpio::INTERRUPT_RISING_EDGE);
+    // Don't act on whatever the line happened to be doing during boot.
+    this->button_.pending_ = false;
+    this->button_armed_ = !this->button_.isr_pin_.digital_read();
+    // Otherwise the entity reads "unknown" in HA until someone presses it.
+    if (this->button_binary_sensor_ != nullptr)
+      this->button_binary_sensor_->publish_initial_state(false);
+  }
+
   // Kick off with a poll so we learn the co-processor's current state fast,
   // rather than waiting for it to spontaneously stream something. tx_byte_()
   // drops this in silent/bench mode (the ESP stays mute; an adapter polls).
@@ -43,6 +61,7 @@ void ShellyWallDimmer::loop() {
 
   const uint32_t now = millis();
 
+  this->service_button_();
   this->engine_.tick(now);
 
   if (now - this->last_poll_ms_ >= this->update_interval_ms_) {
@@ -51,6 +70,49 @@ void ShellyWallDimmer::loop() {
   }
 
   this->maybe_autocommit_();
+}
+
+void ShellyWallDimmer::service_button_() {
+  if (this->button_pin_ == nullptr) return;
+  const uint32_t now = millis();
+
+  if (this->button_.pending_) {
+    this->button_.pending_ = false;
+    if (this->button_armed_) {
+      this->button_armed_ = false;
+      this->last_press_ms_ = now;
+      this->button_press_();
+    }
+  }
+
+  // Re-arm only once the hold-off has passed AND the line reads inactive. The
+  // hold-off alone is not enough: a press held longer than it would let the
+  // RELEASE bounce latch a second edge and toggle straight back, netting to
+  // nothing -- which is exactly the failure an any-edge scheme has.
+  if (!this->button_armed_ && now - this->last_press_ms_ >= this->button_hold_off_ms_ &&
+      !this->button_.isr_pin_.digital_read()) {
+    this->button_.pending_ = false;  // discard bounce latched while disarmed
+    this->button_armed_ = true;
+    if (this->button_binary_sensor_ != nullptr)
+      this->button_binary_sensor_->publish_state(false);
+  }
+}
+
+void ShellyWallDimmer::button_press_() {
+  // Tag the command that this toggle is about to produce as button-originated,
+  // so it gets the setpoint assert. See ShellyWallDimmer::request().
+  this->assert_arm_until_ = millis() + LOCAL_COMMAND_WINDOW_MS;
+
+  if (this->light_state_ != nullptr) {
+    // Route through the light layer rather than commanding the engine directly,
+    // so Home Assistant sees the state change and the entity's own remembered
+    // brightness is what gets restored on a turn-on.
+    auto call = this->light_state_->toggle();
+    call.set_transition_length(0);
+    call.perform();
+  }
+  if (this->button_binary_sensor_ != nullptr)
+    this->button_binary_sensor_->publish_state(true);
 }
 
 void ShellyWallDimmer::maybe_autocommit_() {
@@ -210,6 +272,14 @@ void ShellyWallDimmer::dump_config() {
   ESP_LOGCONFIG(TAG, "  Ramp: %u%%/s (on-change:%s on/off:%s limit-correct:%s)",
                 (unsigned) params.ramp_rate, ONOFF(params.ramp_on_change),
                 ONOFF(params.ramp_on_off), ONOFF(params.limit_correct));
+  ESP_LOGCONFIG(TAG, "  Setpoint assert: %ums every %ums (button commands only)",
+                (unsigned) params.assert_ms, (unsigned) params.assert_interval_ms);
+  if (this->button_pin_ != nullptr) {
+    LOG_PIN("  Button pin: ", this->button_pin_);
+    ESP_LOGCONFIG(TAG, "  Button hold-off: %ums", (unsigned) this->button_hold_off_ms_);
+  } else {
+    ESP_LOGCONFIG(TAG, "  Button: not configured");
+  }
   if (this->silent_) {
     ESP_LOGCONFIG(TAG, "  UART TX: SILENT (bench mode) -- ESP will NOT drive the MCU link");
   }

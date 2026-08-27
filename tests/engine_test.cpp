@@ -54,6 +54,7 @@ struct Rig {
   DimmerParams &p() { return e.params(); }
   void clear() { g_tx.clear(); }
   void req(bool on, uint8_t bri) { e.request(on, bri, now); }
+  void req_local(bool on, uint8_t bri) { e.request_local(on, bri, now); }
   void req_transition(bool on, uint8_t bri, uint32_t transition_ms) {
     e.request_transition(on, bri, transition_ms, now);
   }
@@ -195,6 +196,122 @@ static void test_kick() {
     r.clear();
     r.req(true, 60);
     CHECK(r.last_bri() == 60 && g_tx.size() == 1, "kick off: jumps straight to target");
+  }
+}
+
+// ---- setpoint assert (front-button commands only) --------------------------
+// The cap-touch plate is applied by the co-processor before we hear about it,
+// so a single command byte can simply be overwritten by the finger that pressed
+// the button. request_local() re-sends it for a short window to win that race.
+static void test_assert() {
+  group("assert");
+
+  // The headline case: a kicked turn-on used to emit ONE strike byte and then
+  // sit silent for the whole dwell. Now the dwell carries repeats of it.
+  {
+    Rig r;
+    mk_kick(r);
+    r.p().assert_ms = 50;
+    r.p().assert_interval_ms = 5;
+    r.req_local(true, 5);  // below pivot -> strike at 20, dwell, then ramp down
+    CHECK(r.last_bri() == 20 && r.last_on(), "assert: still strikes at kick_level first");
+    r.advance(60);  // inside the 150 ms dwell, past the 50 ms assert window
+    int repeats = 0;
+    bool all_strike = true;
+    for (uint8_t b : g_tx) {
+      if (byte_bri(b) != 20 || !byte_on(b)) all_strike = false;
+      repeats++;
+    }
+    CHECK(all_strike, "assert: every byte in the dwell is the strike byte");
+    CHECK(repeats >= 5, "assert: dwell carries repeats, not a single byte");
+    CHECK(repeats <= 13, "assert: repeats stop at the window deadline");
+  }
+
+  // Regression guard: assert_ms 0 must reproduce the old behaviour byte for
+  // byte, and a plain (HA) request must be unaffected by the feature at all.
+  {
+    Rig a;
+    mk_kick(a);
+    a.p().assert_ms = 0;
+    a.req_local(true, 5);
+    a.advance(400);
+    std::vector<uint8_t> disabled = g_tx;
+
+    Rig b;
+    mk_kick(b);
+    b.req(true, 5);  // plain request, assert params at their defaults
+    b.advance(400);
+    CHECK(disabled == g_tx, "assert_ms=0 == a plain HA request, byte for byte");
+  }
+
+  // A ramp emits a byte every step, which IS an assert -- replaying a stale one
+  // alongside it would fight the ramp, so the window ends when the ramp starts.
+  {
+    Rig r;
+    mk_kick(r);
+    r.p().kick_dwell_ms = 20;   // ramp starts well inside the window
+    r.p().assert_ms = 200;
+    r.p().assert_interval_ms = 5;
+    r.req_local(true, 5);
+    r.advance(30);
+    r.clear();
+    r.advance(200);
+    bool monotonic = true;
+    int prev = 21;
+    for (uint8_t b : g_tx) {
+      if (byte_bri(b) >= prev) monotonic = false;  // a repeat would break this
+      prev = byte_bri(b);
+    }
+    CHECK(monotonic, "assert: cancelled by the ramp; no stale byte interleaves");
+    CHECK(r.last_bri() == 5, "assert: ramp still lands on the target");
+  }
+
+  // A status frame arriving mid-assert is the touch plate winning the race we
+  // are still running. Adopting it would concede the argument.
+  {
+    Rig r;
+    mk_kick(r);
+    r.p().assert_ms = 50;
+    r.req_local(true, 5);
+    r.advance(10);
+    r.status(3, true);  // the plate reports its own low level
+    CHECK(r.e.current_brightness() == 20, "assert: a mid-window report is not adopted");
+    r.advance(400);
+    CHECK(r.last_bri() == 5, "assert: the commanded target still wins");
+  }
+
+  // Turn-off is asserted too: the plate can re-assert a level just as easily in
+  // that direction. The OFF byte preserves the brightness bits (see test_off).
+  {
+    Rig r;
+    r.p().kick_enabled = false;
+    r.p().assert_ms = 50;
+    r.p().assert_interval_ms = 5;
+    r.req(true, 50);
+    r.advance(5);
+    r.clear();
+    r.req_local(false, 0);
+    r.advance(60);
+    bool all_off_50 = !g_tx.empty();
+    for (uint8_t b : g_tx)
+      if (byte_on(b) || byte_bri(b) != 50) all_off_50 = false;
+    CHECK(all_off_50, "assert: turn-off repeats the OFF byte");
+    CHECK(g_tx.size() >= 5, "assert: turn-off is repeated, not sent once");
+  }
+
+  // busy() covers the window, so the wrapper holds off reflecting state to HA
+  // and a transition doesn't report itself finished early.
+  {
+    Rig r;
+    r.p().kick_enabled = false;
+    r.p().ramp_on_change = false;
+    r.p().assert_ms = 50;
+    r.req_local(true, 50);
+    CHECK(r.e.busy(), "assert: busy() during the window");
+    r.advance(20);
+    CHECK(r.e.busy(), "assert: still busy mid-window");
+    r.advance(60);
+    CHECK(!r.e.busy(), "assert: idle once the window closes");
   }
 }
 
@@ -832,6 +949,7 @@ static void test_overtemp() {
 int main() {
   test_range_mapping();
   test_kick();
+  test_assert();
   test_ramp();
   test_off();
   test_transition();

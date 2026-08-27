@@ -42,6 +42,25 @@ struct DimmerParams {
   bool ramp_on_off = false;      // fade in on turn-on / fade out on turn-off
   bool limit_correct = false;    // if a touch report lands outside [min,max], ramp back to it
 
+  // ---- setpoint assert (front-button commands only) -----------------------
+  // After a LOCAL command -- one that originated at the front pushbutton, via
+  // request_local() -- re-send the byte we just emitted every assert_interval_ms
+  // for assert_ms.
+  //
+  // Why: the same finger that presses the button lands on the capacitive plate,
+  // which is owned by the co-processor and applied to the TRIAC before we ever
+  // hear about it (PROTOCOL.md). A kicked turn-on emits exactly ONE strike byte
+  // and then sits silent for the whole kick dwell, so a touch position captured
+  // in that window simply overwrites it and the bulb never strikes. A short
+  // burst wins that race; a single byte loses it. It applies to turn-OFF too --
+  // the plate can re-assert a level just as easily in that direction.
+  //
+  // Only the button path arms this. Home Assistant commands go through plain
+  // request() and are unchanged, because nothing is touching the plate then.
+  // 0 disables.
+  uint32_t assert_ms = 50;
+  uint32_t assert_interval_ms = 5;
+
   // ---- over-temperature cutout (belt and suspenders) ----------------------
   // Over the limit, the output is commanded off. That is the whole rule.
   //
@@ -127,7 +146,11 @@ class DimmerEngine {
     uint8_t ha = map_to_ha(current_);
     return (on_ && ha == 0) ? 1 : ha;
   }
-  bool busy() const { return mode_ != Mode::IDLE; }
+  // Busy == "the engine still owns the wire". True during a kick/ramp AND
+  // during a setpoint assert, so state reflection back to Home Assistant and
+  // transition completion both wait out the (short) assert window rather than
+  // publishing a value the co-processor may still be arguing with.
+  bool busy() const { return mode_ != Mode::IDLE || asserting_; }
 
   // Same as request(), but ramp to the target over EXACTLY transition_ms instead
   // of the configured ramp_rate -- the engine-side hook for a Home Assistant
@@ -154,6 +177,22 @@ class DimmerEngine {
     // clear it so it can't leak into a later, unrelated ramp.
     if (mode_ != Mode::KICK_PRIMING)
       transition_ms_override_ = 0;
+  }
+
+  // A request that originated at the FRONT PUSHBUTTON. Identical to request(),
+  // plus it arms the setpoint assert (see DimmerParams::assert_ms) so the
+  // cap-touch plate under the same finger cannot overwrite the command.
+  //
+  // The window is armed only if the request actually put a byte on the wire --
+  // an idempotent no-op has nothing to re-assert, and replaying a byte from
+  // some earlier, unrelated command would be worse than doing nothing.
+  void request_local(bool on, uint8_t brightness, uint32_t now_ms) {
+    uint32_t before = emit_count_;
+    request(on, brightness, now_ms);
+    if (p_.assert_ms == 0 || emit_count_ == before) return;
+    asserting_ = true;
+    assert_until_ = now_ms + p_.assert_ms;
+    t_next_assert_ = now_ms + assert_period_();
   }
 
   // External request from HA / the light layer / the pushbutton.
@@ -269,6 +308,22 @@ class DimmerEngine {
       default:
         break;
     }
+
+    // Setpoint assert. Deliberately serviced OUTSIDE the mode switch: the window
+    // it exists to cover is KICK_PRIMING, the silent kick dwell, and it must also
+    // survive an immediate command settling straight back to IDLE. It replays
+    // last_byte_, which emit() keeps current, so a command arriving mid-window is
+    // asserted rather than the one it replaced.
+    if (asserting_) {
+      if (mode_ == Mode::RAMPING || int32_t(now_ms - assert_until_) >= 0) {
+        // A ramp already puts a byte on the wire every ~10 ms, which IS an
+        // assert; replaying a stale one alongside it would only fight the ramp.
+        asserting_ = false;
+      } else if (int32_t(now_ms - t_next_assert_) >= 0) {
+        emit(last_byte_);
+        t_next_assert_ = now_ms + assert_period_();
+      }
+    }
   }
 
   // Over-temperature cutout. Fed every status frame with the co-processor's
@@ -314,7 +369,10 @@ class DimmerEngine {
   // can only react AFTER the co-processor reports it (README caveat), and while
   // correcting we ignore further reports (mode != IDLE).
   void notify_status(uint8_t b0_brightness, bool output_on, uint32_t now_ms) {
-    if (mode_ != Mode::IDLE) return;
+    // busy(), not mode_: a report arriving mid-assert is the touch plate winning
+    // a race we are still running, so adopting it as truth would hand the plate
+    // the argument the assert exists to win.
+    if (busy()) return;
     current_ = b0_brightness;
     on_ = output_on;
     // The touch panel commands the co-processor directly, so during a thermal
@@ -337,7 +395,16 @@ class DimmerEngine {
  private:
   enum class Mode : uint8_t { IDLE, KICK_PRIMING, RAMPING };
 
-  void emit(uint8_t byte) { if (send_) send_(byte, send_ctx_); }
+  void emit(uint8_t byte) {
+    last_byte_ = byte;
+    emit_count_++;
+    if (send_) send_(byte, send_ctx_);
+  }
+
+  // Never zero: a zero interval would re-emit on every tick and flood the link.
+  uint32_t assert_period_() const {
+    return p_.assert_interval_ms ? p_.assert_interval_ms : 1;
+  }
 
   // Stretch a 0..100 command onto the [min,max] device window: 0 -> min,
   // 100 -> max, linear with rounding. (Replaces the old floor/ceiling clamp.)
@@ -455,6 +522,13 @@ class DimmerEngine {
   uint32_t ramp_interval_ms_ = 20;  // current ramp's step interval, set at start
   bool pending_off_ = false;      // fade-out in progress: send OFF on completion
   bool overtemp_ = false;         // output held off by the over-temperature cutout
+
+  // Setpoint assert (see DimmerParams::assert_ms and tick()).
+  bool asserting_ = false;
+  uint32_t assert_until_ = 0;    // window deadline
+  uint32_t t_next_assert_ = 0;   // next replay time
+  uint8_t last_byte_ = 0;        // the byte emit() last put on the wire
+  uint32_t emit_count_ = 0;      // total emits; request_local() watches it for a no-op
 
   // request_transition() support (see there + start_ramp_to()).
   bool force_ramp_ = false;             // ramp even if the ramp_on_*/toggle is off

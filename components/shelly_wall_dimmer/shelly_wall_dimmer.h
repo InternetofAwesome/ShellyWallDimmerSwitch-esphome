@@ -4,6 +4,7 @@
 #include <string>
 
 #include "esphome/core/component.h"
+#include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "esphome/core/preferences.h"
@@ -28,7 +29,9 @@
 
 namespace esphome::shelly_wall_dimmer {
 
-// ---- one C++ member field per live-tunable DimmerParams field -------------
+// ---- one entry per live-tunable knob -------------------------------------
+// Most target a DimmerParams field; BUTTON_HOLD_OFF_MS targets the wrapper
+// instead (the button lives here, not in the framework-agnostic engine).
 enum class DimmerNumberType {
   KICK_LEVEL,
   KICK_DWELL_MS,
@@ -36,6 +39,9 @@ enum class DimmerNumberType {
   MAX_BRIGHTNESS,
   RAMP_RATE,
   OVERTEMP_LIMIT,
+  BUTTON_HOLD_OFF_MS,
+  ASSERT_MS,
+  ASSERT_INTERVAL_MS,
 };
 
 // One typed boolean switch per engine toggle (kick + the three ramp gates).
@@ -48,6 +54,25 @@ enum class DimmerSwitchType {
   // Not an engine parameter: permission to let an OTA erase the slot that still
   // holds stock firmware. Persisted, set-once-and-forget. See dfu_wrap.cpp.
   ALLOW_OVERWRITE_STOCK,
+};
+
+// ---- front pushbutton: ISR edge LATCH --------------------------------------
+// ESPHome's own `binary_sensor: platform: gpio` cannot serve here, and turning
+// its debounce filter down does not help. Its ISR stores the pin's CURRENT
+// LEVEL and loop() publishes whatever level it finds; a contact that opens and
+// closes between two loop iterations round-trips to the old level and is lost
+// entirely, interrupts or not. A wall switch that ignores a quick tap is the
+// bug this exists to fix, so we latch the EDGE instead of sampling the level:
+// once pending_ is set, the press is remembered no matter how brief it was.
+//
+// No vtables, no allocation -- this is touched from an ISR. Modelled on
+// ESPHome's GPIOBinarySensorStore.
+class ButtonStore {
+ public:
+  static void IRAM_ATTR intr(ButtonStore *arg) { arg->pending_ = true; }
+
+  ISRInternalGPIOPin isr_pin_;
+  volatile bool pending_{false};
 };
 
 class ShellyWallDimmer : public Component, public uart::UARTDevice {
@@ -74,13 +99,35 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   void set_light_state(light::LightState *state) { this->light_state_ = state; }
   void set_temperature_sensor(sensor::Sensor *s) { this->temperature_sensor_ = s; }
   void set_overtemp_binary_sensor(binary_sensor::BinarySensor *s) { this->overtemp_binary_sensor_ = s; }
+  void set_button_binary_sensor(binary_sensor::BinarySensor *s) { this->button_binary_sensor_ = s; }
   void set_last_frame_text_sensor(text_sensor::TextSensor *s) { this->last_frame_text_sensor_ = s; }
   void set_mcu_version_text_sensor(text_sensor::TextSensor *s) { this->mcu_version_text_sensor_ = s; }
+
+  // Front pushbutton ("key" net, GPIO4 on stock). Optional: with no pin
+  // configured none of the button code runs at all.
+  void set_button_pin(InternalGPIOPin *pin) { this->button_pin_ = pin; }
+
+  // Minimum gap between two accepted presses. Also the window during which
+  // release bounce is discarded -- see loop().
+  void set_button_hold_off_ms(uint32_t ms) { this->button_hold_off_ms_ = ms; }
 
   // ---- called by DimmerLight::write_state() ----
   // brightness_pct: 0-100. Routes through the engine's kick/ramp/clamp state
   // machine rather than sending the byte directly.
-  void request(bool on, uint8_t brightness_pct) { this->engine_.request(on, brightness_pct, millis()); }
+  //
+  // A press arms a short DEADLINE rather than setting a sticky "local" flag,
+  // because LightState::perform() defers write_state() by a loop iteration --
+  // there is no call we can tag directly. A deadline that expires on its own
+  // cannot leak into an unrelated Home Assistant command later; a flag could.
+  void request(bool on, uint8_t brightness_pct) {
+    const uint32_t now = millis();
+    if (this->assert_arm_until_ != 0 && int32_t(now - this->assert_arm_until_) < 0) {
+      this->assert_arm_until_ = 0;  // one command per press
+      this->engine_.request_local(on, brightness_pct, now);
+    } else {
+      this->engine_.request(on, brightness_pct, now);
+    }
+  }
 
   // ---- called by DimmerTransitionTransformer::start() ----
   // Same as request(), but ramps to the target over exactly transition_ms -- the
@@ -179,6 +226,15 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   void handle_stray_byte_(uint8_t b);
   void maybe_publish_light_state_(uint8_t brightness_pct, bool on);
 
+  // Drain the ISR latch and, if a press is due, act on it. Called from loop().
+  void service_button_();
+  void button_press_();
+
+  // How long a press stays "local" for request()'s benefit. Generous because it
+  // only has to outlive LightState::perform()'s one-loop deferral, and it is
+  // consumed by the first request() that sees it either way.
+  static constexpr uint32_t LOCAL_COMMAND_WINDOW_MS = 200;
+
   // Auto-commit-on-healthy: once we've run this long without a crash/reboot,
   // treat the boot as healthy and (if still uncommitted, e.g. just DFU'd) make
   // the slot permanent so the bootloader stops the ba countdown. A crash-loop
@@ -192,11 +248,24 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   light::LightState *light_state_{nullptr};
   sensor::Sensor *temperature_sensor_{nullptr};
   binary_sensor::BinarySensor *overtemp_binary_sensor_{nullptr};
+  binary_sensor::BinarySensor *button_binary_sensor_{nullptr};
   text_sensor::TextSensor *last_frame_text_sensor_{nullptr};
   text_sensor::TextSensor *mcu_version_text_sensor_{nullptr};
 
   uint32_t update_interval_ms_{1000};
   uint32_t last_poll_ms_{0};
+
+  // ---- front pushbutton ----------------------------------------------------
+  InternalGPIOPin *button_pin_{nullptr};
+  ButtonStore button_{};
+  uint32_t button_hold_off_ms_{100};
+  uint32_t last_press_ms_{0};
+  // Leading-edge arming: a press fires the instant it is latched, then the
+  // button is disarmed until the hold-off has passed AND the line has gone
+  // inactive again. One toggle per press however long it is held.
+  bool button_armed_{true};
+  // Deadline marking "the next request() came from the button" -- see request().
+  uint32_t assert_arm_until_{0};
 
   // Bench/sweep mode -- see set_silent(). When true, tx_byte_() drops every
   // outbound byte so the ESP is electrically mute on the MCU link.
@@ -357,6 +426,17 @@ class DimmerNumber : public number::Number, public Component, public Parented<Sh
         break;
       case DimmerNumberType::OVERTEMP_LIMIT:
         params.overtemp_limit_c = static_cast<uint8_t>(value);
+        break;
+      case DimmerNumberType::ASSERT_MS:
+        params.assert_ms = static_cast<uint32_t>(value);
+        break;
+      case DimmerNumberType::ASSERT_INTERVAL_MS:
+        params.assert_interval_ms = static_cast<uint32_t>(value);
+        break;
+      case DimmerNumberType::BUTTON_HOLD_OFF_MS:
+        // The only knob here that is NOT a DimmerParams field: the button lives
+        // in the wrapper, since the engine has no GPIOs.
+        this->parent_->set_button_hold_off_ms(static_cast<uint32_t>(value));
         break;
     }
     this->publish_state(value);

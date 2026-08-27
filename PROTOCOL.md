@@ -66,11 +66,29 @@ line after the first `\n`. Watch for `reset!` to re-sync state.
    toggle brightness). **PREEMPTIVE** — ESPHome decides before the MCU acts,
    so the kick applies cleanly here. **GPIO4**, input, no internal pull,
    any-edge interrupt (confirmed from the stock app's board init).
+
+   *This firmware does it differently, on purpose.* It attaches a **single-edge
+   (press) interrupt** that only LATCHES the edge, then fires on the leading
+   edge and disarms until a hold-off has passed and the line reads inactive.
+   Any-edge would fire on press *and* release, so a press held longer than the
+   hold-off toggles twice and nets to nothing; and sampling the pin's level in
+   the main loop (what ESPHome's `gpio` binary sensor does) drops a tap shorter
+   than one loop iteration entirely.
 2. **Capacitive touch slider (brightness)** — handled by the **co-processor
    autonomously**. Finger position → absolute brightness applied immediately,
    then streamed to the ESP as `$…#` frames. **REACTIVE ONLY** — ESPHome
    learns of the change after it is applied; it cannot intercept before the
    TRIAC. Best lever is the change stream (level + timing).
+
+**These two fight each other, because one finger drives both.** A press on the
+plate registers as a touch position *and* a button press, and the co-processor
+applies its touch level before the ESP32 hears anything. A kicked turn-on emits
+exactly one strike byte and then goes silent for the kick dwell, so the touch
+level simply overwrites it — press the lower plate to turn on and the bulb never
+strikes. This firmware answers by re-sending a button-originated command in a
+short burst (the "setpoint assert", ~50 ms at ~5 ms intervals, both tunable at
+runtime) so it wins the race a single byte loses. Home Assistant commands are
+not asserted; nothing is touching the plate then.
 
 ## Status LEDs
 Flex nets `wifi_led` / `pw_led` drive front status LEDs from ESP32 GPIOs:

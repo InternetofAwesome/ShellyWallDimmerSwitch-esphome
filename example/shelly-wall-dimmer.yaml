@@ -99,6 +99,18 @@ uart:
 shelly_wall_dimmer:
   id: dimmer_coprocessor
   update_interval: 1s  # periodic CMD_POLL so temperature/state stay fresh
+  # Front tactile button ("key" net). Handled in the component, not by
+  # `binary_sensor: platform: gpio` -- that platform samples the pin's LEVEL in
+  # loop() and silently drops a tap shorter than one loop iteration, so quick
+  # taps do nothing. This latches the press EDGE in the ISR instead, so a tap of
+  # any length toggles exactly once. A press also gets the setpoint assert (see
+  # "Assert Duration" below). Do NOT also point a gpio binary_sensor at GPIO4.
+  button_pin:
+    number: GPIO4
+    # No ESP32 internal pull -- the board provides an external pull.
+    mode:
+      input: true
+    inverted: true  # BENCH-VERIFY (1): active-low starting guess
   # First-flash helper: build the stock-format Shelly OTA "bridge" zip on every
   # successful compile (from build artifacts only -- no Shelly blobs). Add
   # `push_to:` with the device IP to also serve it and trigger Shelly.Update on
@@ -110,8 +122,8 @@ shelly_wall_dimmer:
 light:
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
-    # id so the v1 wall button (light.toggle) and the power-LED mirror
-    # automations below can reference this light.
+    # id for your own automations. The front button does NOT need it -- the
+    # component toggles this light directly (see `button_pin:` above).
     id: dimmer_light
     name: "Light"
     # The co-processor takes LINEAR 0-100% and applies its own dimming curve,
@@ -210,6 +222,33 @@ number:
     type: overtemp_limit
     name: "Over-temp Limit"
     initial_value: 65      # 40-85 C; the firmware clamps to 85 regardless
+  # ---- front button + setpoint assert ---------------------------------------
+  # Minimum gap between two accepted button presses, and the window in which
+  # release bounce is discarded. Raise it if one tap toggles twice; lower it if
+  # fast repeated taps are being swallowed.
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: button_hold_off_ms
+    name: "Button Hold Off"
+    initial_value: 100     # 0-1000 ms
+  # The finger that presses the button also lands on the capacitive plate, which
+  # the co-processor applies to the TRIAC before we ever hear about it. A kicked
+  # turn-on otherwise sends ONE strike byte and then goes quiet for the whole
+  # kick dwell, so the touch position overwrites it and the bulb never strikes.
+  # These re-send a button-originated command hard enough to win that race.
+  # Raise the duration if a lingering finger still steals the command; raise the
+  # interval if the touch LED bar flickers during the burst. Home Assistant
+  # commands are never asserted -- nothing is touching the plate then.
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: assert_ms
+    name: "Assert Duration"
+    initial_value: 50      # 0-1000 ms; 0 disables the assert
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: assert_interval_ms
+    name: "Assert Interval"
+    initial_value: 5       # 1-100 ms
   # (The optional `raw_tx_byte` diagnostic number belongs here -- see
   # "RAW-SEND PROTOCOL TOOL" near the bottom of this file for both halves.)
 
@@ -342,10 +381,12 @@ text_sensor:
 
 # ---- v1 LOCAL CONTROL: front button + status LEDs -------------------------
 # GPIOs confirmed from stock app disassembly.
-#   (1) BUTTON ACTIVE LEVEL -- STILL TO BENCH-VERIFY. `inverted: true` below
-#       assumes active-low (button to GND + external board pullup, the
-#       near-certain wiring). If a tap reads backwards (light toggles on
-#       release, or state is stuck), flip `inverted`.
+#   (1) BUTTON ACTIVE LEVEL -- STILL TO BENCH-VERIFY. `inverted: true` on
+#       `button_pin:` above assumes active-low (button to GND + external board
+#       pullup, the near-certain wiring). If a tap toggles on RELEASE rather
+#       than on press, flip `inverted`. Note the component attaches a LOGICAL
+#       rising-edge interrupt, so `inverted` is the only polarity knob -- it
+#       flips both the edge and the re-arm read together.
 #   (2) LED ACTIVE LEVEL -- RESOLVED on a real unit: both LEDs are active-low,
 #       so the ledc outputs above set `inverted: true`. The wifi(GPIO33)/
 #       power(GPIO25) ASSIGNMENT is still circumstantial; if the two behave as
@@ -357,21 +398,17 @@ binary_sensor:
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: overtemp
     name: "Over-temperature"
-  # Front tactile button ("key" net) on GPIO4. Preemptive path: a tap runs
-  # through our engine via light.toggle, so turn-on gets the kick.
-  - platform: gpio
+  # Front tactile button ("key" net) on GPIO4 -- see `button_pin:` above, which
+  # is where the pin is configured and where the toggle is actually performed.
+  # This entity only makes presses VISIBLE in Home Assistant; adding it is
+  # optional and removing it does not disable the button. It is a debounced
+  # PULSE, not a live view of the contact: true when a press is accepted, false
+  # when the button re-arms. An `on_press:` here runs IN ADDITION to the
+  # built-in toggle, so do not put `light.toggle` in one.
+  - platform: shelly_wall_dimmer
+    shelly_wall_dimmer_id: dimmer_coprocessor
+    type: button
     name: "Button"
-    pin:
-      number: GPIO4
-      # No ESP32 internal pull -- the board provides an external pull. Stock
-      # uses an any-edge ISR + debounce; we approximate with the filter below.
-      mode:
-        input: true
-      inverted: true  # BENCH-VERIFY (1): active-low starting guess
-    filters:
-      - delayed_on_off: 30ms  # debounce
-    on_press:
-      - light.toggle: dimmer_light
 
 output:
   # Status-LED PWM channels at ~1000 Hz (ledc). Brightness + on/off both come

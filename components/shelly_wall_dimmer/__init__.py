@@ -5,6 +5,7 @@ from pathlib import Path
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.pins as pins
 from esphome.components import esp32, uart
 from esphome.const import CONF_ID, CONF_UPDATE_INTERVAL
 from esphome.core import CORE
@@ -44,6 +45,15 @@ CONF_PUSH_TO = "push_to"
 # still logs the MCU's frames as a cross-check. See shelly_wall_dimmer.h.
 CONF_SILENT = "silent"
 
+# Front tactile button ("key" net, GPIO4 on stock). Handled INSIDE the component
+# rather than by `binary_sensor: platform: gpio`, because that platform samples
+# the pin's level in loop() and drops a tap shorter than one loop iteration --
+# see ButtonStore in shelly_wall_dimmer.h. Optional: omit it and no button code
+# runs. Do NOT also point a gpio binary_sensor at the same pin; sharing it needs
+# `allow_other_uses`, which forces that platform back into polling mode and
+# reinstates the very bug this replaces.
+CONF_BUTTON_PIN = "button_pin"
+
 BRIDGE_PACKAGE_SCHEMA = cv.Schema(
     {
         # Device IP (or hostname) to push the finished package to via
@@ -59,6 +69,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_UPDATE_INTERVAL, default="1s"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_BRIDGE_PACKAGE): BRIDGE_PACKAGE_SCHEMA,
             cv.Optional(CONF_SILENT, default=False): cv.boolean,
+            cv.Optional(CONF_BUTTON_PIN): pins.internal_gpio_input_pin_schema,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -259,6 +270,9 @@ async def to_code(config):
 
     cg.add(var.set_update_interval(config[CONF_UPDATE_INTERVAL]))
     cg.add(var.set_silent(config[CONF_SILENT]))
+
+    if CONF_BUTTON_PIN in config:
+        cg.add(var.set_button_pin(await cg.gpio_pin_expression(config[CONF_BUTTON_PIN])))
 
     # ---- Shelly-bootloader requirements, injected here so the device YAML stays
     # a plain ESPHome config (no partitions:/sdkconfig_options:/advanced: needed).

@@ -32,6 +32,19 @@ TYPES = {
     # held off. Default errs LOW because it is provisional; the firmware
     # clamps anything above the ceiling. See dimmer_engine.h.
     "overtemp_limit": (DimmerNumberType.OVERTEMP_LIMIT, 40, 85, 1, 65),
+    # ---- front button + setpoint assert -------------------------------------
+    # All three are live knobs on purpose. How long a finger lingers on the
+    # touch plate after a press, and how bouncy a given unit's switch is, are
+    # properties of the hardware in the wall -- tuning them should be a slider
+    # in HA, not a reflash of a device with no USB port.
+    #
+    # Minimum gap between accepted presses, and the window in which release
+    # bounce is discarded. 0 accepts every latched edge.
+    "button_hold_off_ms": (DimmerNumberType.BUTTON_HOLD_OFF_MS, 0, 1000, 10, 100),
+    # How long a button-originated command is re-asserted for, and how often.
+    # assert_ms 0 disables the assert entirely. See dimmer_engine.h.
+    "assert_ms": (DimmerNumberType.ASSERT_MS, 0, 1000, 10, 50),
+    "assert_interval_ms": (DimmerNumberType.ASSERT_INTERVAL_MS, 1, 100, 1, 5),
 }
 
 

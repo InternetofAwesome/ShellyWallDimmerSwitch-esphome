@@ -63,20 +63,22 @@ Only the ESP32 is replaced. **The co-processor that actually switches mains keep
    - [Sensor options](#sensor-options)
    - [Local hardware: button and LEDs](#local-hardware-button-and-leds)
 8. [How the kick and ramps behave](#how-the-kick-and-ramps-behave)
-9. [Thermal cutout](#thermal-cutout)
-10. [Converting more switches](#converting-more-switches)
-11. [Troubleshooting](#troubleshooting)
+9. [The front button](#the-front-button)
+10. [Setpoint assert](#setpoint-assert)
+11. [Thermal cutout](#thermal-cutout)
+12. [Converting more switches](#converting-more-switches)
+13. [Troubleshooting](#troubleshooting)
 
 **Part 2 — how it works, and where to check my work**
 
-12. [Releases and stability](#releases-and-stability)
-13. [What persists](#what-persists)
-14. [Getting back to stock (untested)](#getting-back-to-stock-untested)
-15. [Developer and recovery buttons](#developer-and-recovery-buttons)
-16. [Use at your own risk](#use-at-your-own-risk)
-17. [What was done to de-risk this](#what-was-done-to-de-risk-this)
-18. [Testing](#testing)
-19. [Repo layout](#repo-layout)
+14. [Releases and stability](#releases-and-stability)
+15. [What persists](#what-persists)
+16. [Getting back to stock (untested)](#getting-back-to-stock-untested)
+17. [Developer and recovery buttons](#developer-and-recovery-buttons)
+18. [Use at your own risk](#use-at-your-own-risk)
+19. [What was done to de-risk this](#what-was-done-to-de-risk-this)
+20. [Testing](#testing)
+21. [Repo layout](#repo-layout)
 20. [License](#license)
 
 ---
@@ -296,6 +298,11 @@ shelly_wall_dimmer:
   id: dimmer
   uart_id: dimmer_uart
   update_interval: 1s
+  button_pin:                # front tactile button; toggles the light in firmware
+    number: GPIO4
+    mode:
+      input: true
+    inverted: true
   # silent: false            # bench mode: ESP goes electrically mute on the bus
   # bridge_package:
   #   push_to: 192.168.1.50
@@ -409,17 +416,10 @@ binary_sensor:
     shelly_wall_dimmer_id: dimmer
     type: overtemp
     name: "Over-temperature"
-  - platform: gpio                   # front tactile button
+  - platform: shelly_wall_dimmer     # front button, visible in HA
+    shelly_wall_dimmer_id: dimmer    # (the toggle itself is done in firmware)
+    type: button
     name: "Button"
-    pin:
-      number: GPIO4
-      mode:
-        input: true
-      inverted: true
-    filters:
-      - delayed_on_off: 30ms
-    on_press:
-      - light.toggle: dimmer_light
 
 output:
   - platform: ledc
@@ -471,6 +471,7 @@ logger:
 | `update_interval` | `1s` | How often to poll the co-processor, keeping temperature and state fresh. |
 | `bridge_package` | off | Build the first-flash package during compile. Sub-option `push_to: <ip>` also serves it and triggers the update on that device. Omit `push_to` to just produce the zip in the build's `shelly-bridge/` folder. Requires `toolchain: platformio`. |
 | `silent` | `false` | Bench mode: the ESP32 sends nothing at all on the co-processor bus, so an external USB-serial adapter can drive it without contention. Pair with an RX-only `uart:`. You do not want this in normal use. |
+| `button_pin` | none | The front tactile button, normally `GPIO4`. Takes a standard pin config. Omit it and no button handling runs at all. See [The front button](#the-front-button). |
 
 The bridge package contains **only the application image** — no partition table, no filesystem, and **no Shelly binaries are redistributed**. That is a safety requirement, not a simplification: stock partition layouts differ between firmware versions, so shipping either part would corrupt the fallback slot on a device whose stock version doesn't match.
 
@@ -495,6 +496,9 @@ All are `platform: shelly_wall_dimmer` with a `type:`, and all are `config`-cate
 | `max_brightness` | 0–100 % | 100 | High end of the mapped window. |
 | `ramp_rate` | 1–1000 %/s | 150 | One shared speed for every ramp. Cannot be zero. |
 | `overtemp_limit` | 40–85 °C | 65 | Above this reported co-processor temperature, the output is switched off. See [Thermal cutout](#thermal-cutout). |
+| `button_hold_off_ms` | 0–1000 ms | 100 | Minimum gap between two accepted button presses, and the window in which release bounce is discarded. Raise it if one tap toggles twice; lower it if fast taps are swallowed. |
+| `assert_ms` | 0–1000 ms | 50 | How long a **button-originated** command is re-sent for. `0` disables. See [Setpoint assert](#setpoint-assert). |
+| `assert_interval_ms` | 1–100 ms | 5 | How often it is re-sent during that window. |
 
 **Range mapping.** `min`/`max` don't clamp, they **stretch**. Home Assistant 0 % maps to `min`, 100 % maps to `max`, linear in between, and device reports map back so HA still reads 0–100 %. So `min=20, max=80` gives 0→20, 50→50, 100→80. The defaults (1/100) are effectively a no-op. `kick_level` is always in real device terms, not mapped.
 
@@ -520,14 +524,15 @@ All are `platform: shelly_wall_dimmer` with a `type:`. They persist the same way
 | `text_sensor` | `last_frame` | The latest raw status frame as hex. Diagnostic. |
 | `text_sensor` | `mcu_version` | Co-processor firmware version from its boot banner, e.g. `shelly_apt_003 mcu ver: v1.0.4`. |
 | `binary_sensor` | `overtemp` | `problem` class. On while the thermal cutout is holding the output off. |
+| `binary_sensor` | `button` | The front button. A debounced **pulse**, not a live view of the contact: true when a press is accepted, false when the button re-arms. Optional — the toggle happens in firmware whether or not this entity exists, so an `on_press:` here runs *in addition* to it. |
 
 ### Local hardware: button and LEDs
 
-Standard ESPHome platforms — no custom options. The GPIOs are fixed by the hardware:
+The LEDs are standard ESPHome platforms. The button is **not** — it is `button_pin:` on the `shelly_wall_dimmer:` block (see below). The GPIOs are fixed by the hardware:
 
 | Function | GPIO | Notes |
 |---|---|---|
-| Front button | `GPIO4` | A tap runs `light.toggle`, so it gets the kick. Assumed active-low; flip `inverted` if a tap reads backwards. |
+| Front button | `GPIO4` | Configured as `button_pin:`, not as a `binary_sensor`. A tap toggles the light through the engine, so it gets the kick. Assumed active-low; flip `inverted` if a tap toggles on release instead of on press. |
 | Power LED | `GPIO25` | ~1000 Hz PWM. A **locator**: on when the light is off. Does not track dimmer brightness. |
 | Wi-Fi LED | `GPIO33` | ~1000 Hz PWM via `status_led_pwm`. An **error indicator**: off when healthy, blinks on AP/connecting/warning/error. |
 | Co-processor UART | `GPIO21` TX / `GPIO22` RX | If communication fails on the first flash, swapping these is the first thing to try. |
@@ -549,6 +554,44 @@ With kick off, a turn-on jumps straight to target, or fades up from 0 if `ramp_o
 **Ramps.** `ramp_rate` is in percent per second. The firmware converts it to a fixed step cadence, quantized to a 10 ms floor — about one mains half-cycle, since the TRIAC can only act once per half-cycle (8.33 ms at 60 Hz) and finer steps buy nothing. There is no dithering: one step size, one interval, and a partial final step lands exactly on the setpoint.
 
 **Transitions.** `light.turn_on ... transition: Ns` ramps over exactly that duration using our engine rather than ESPHome's, so the two don't fight. It composes with the kick: the strike stays instant, and the requested duration covers the ramp after it.
+
+---
+
+## The front button
+
+The button is configured as `button_pin:` on the `shelly_wall_dimmer:` block, not as a `binary_sensor`. That is deliberate, and the two cannot be swapped:
+
+```yaml
+shelly_wall_dimmer:
+  id: dimmer
+  button_pin:
+    number: GPIO4
+    mode:
+      input: true
+    inverted: true
+```
+
+**Why not `binary_sensor: platform: gpio`?** Because it drops quick taps, and no amount of tuning fixes that. Its interrupt handler stores the pin's *current level*, and `loop()` publishes whatever level it finds when it next runs. A contact that opens and closes between two loop iterations round-trips to the level it started at and is never seen. Turning the debounce filter down doesn't help — the press was already gone before the filter got a chance. This component latches the **edge** instead, so a tap of any length is remembered.
+
+**One toggle per press, however long you hold it.** The press fires on the leading edge, immediately. The button is then disarmed until `button_hold_off_ms` has passed *and* the line reads inactive again. Both conditions matter: the hold-off alone would let the release bounce of a long press latch a second edge and toggle straight back, netting to nothing.
+
+Do **not** also point a `binary_sensor: platform: gpio` at the same pin. Sharing a pin requires `allow_other_uses`, which forces that platform back into polling mode — reinstating exactly the bug this replaces. To see presses in Home Assistant, add the component's own `binary_sensor` with `type: button`.
+
+`inverted:` is the single polarity knob. The component attaches a *logical* rising-edge interrupt, so `inverted` flips the hardware edge and the re-arm read together. If a tap toggles on release rather than on press, flip it.
+
+## Setpoint assert
+
+The finger that presses the button also lands on the capacitive touch plate. That plate belongs to the co-processor, which applies it to the TRIAC before the ESP32 hears anything about it — see [PROTOCOL.md](PROTOCOL.md). So a button press and a touch position can arrive as competing commands, and the touch one gets there first.
+
+The kick makes this worse, not better. A kicked turn-on puts **exactly one** strike byte on the wire and then goes quiet for the whole `kick_dwell_ms` — precisely the window in which a low touch position overwrites it. The result is the failure this feature exists to fix: you press the bottom of the plate to turn the light on, and the bulb never strikes.
+
+So a **button-originated** command is re-sent every `assert_interval_ms` for `assert_ms`. A burst wins the race that a single byte loses. It applies to turn-off too, since the plate can re-assert a level just as easily in that direction. While the window is open, status frames from the co-processor are not adopted as truth — a report arriving mid-assert is the plate winning an argument still in progress.
+
+Commands from Home Assistant are **never** asserted. Nothing is touching the plate then, and a burst would only add traffic.
+
+The window ends early once a ramp starts, because a ramp already emits a byte every step — that *is* an assert, and replaying a stale byte alongside it would fight the ramp.
+
+**Tuning.** Both knobs are live entities, not compile-time constants, because how long a finger lingers is a property of the hardware in the wall. If a resting finger still steals the command, raise **Assert Duration** (50 → 150 → 250 ms). If the touch LED bar flickers during the burst, raise **Assert Interval**. Neither needs a reflash. Set `assert_ms` to 0 to switch the feature off entirely.
 
 ---
 
@@ -596,7 +639,11 @@ Each switch keeps its **own** stock image in its own spare slot, with its own **
 | Build refuses with "must not run as part of an upload job" | You used Install → Wireless with `bridge_package` configured. Use **Manual download**. |
 | Wireless update refused with `OTA REFUSED` | Working as designed — see [Updating after the first flash](#updating-after-the-first-flash). |
 | Device boots but no state, no temperature | UART wiring — try swapping `tx_pin`/`rx_pin`. |
-| Light responds backwards to the button | Flip `inverted:` on the `GPIO4` binary sensor. |
+| Light toggles on release instead of on press | Flip `inverted:` on `button_pin:`. |
+| A quick tap does nothing | You are using `binary_sensor: platform: gpio` for the button instead of `button_pin:` — that platform samples the pin's level and drops sub-loop-length taps. See [The front button](#the-front-button). |
+| One tap toggles twice | Raise **Button Hold Off**. |
+| Pressing the lower touch plate turns on but the bulb doesn't strike | The touch position is overwriting the strike command. Raise **Assert Duration** (50 → 150 → 250 ms). See [Setpoint assert](#setpoint-assert). |
+| The touch LED bar flickers on a button press | Raise **Assert Interval** so the burst is less dense. |
 | LEDs full-on when they should be off | LED polarity — the `inverted: true` on the `ledc` outputs. |
 | Low brightness does nothing / jumps oddly | `gamma_correct: 0` missing, or `kick_level` set below what your bulb can strike. |
 | Ramps stutter or fight themselves | `default_transition_length: 0s` missing. |
@@ -658,7 +705,7 @@ Persisted by this component — the key is a hash of the entity's **object ID**,
 
 | Entity | Stored | First-boot value from |
 |---|---|---|
-| `number` × 5 (`kick_level`, `kick_dwell_ms`, `min_brightness`, `max_brightness`, `ramp_rate`) | last value set | `initial_value:` |
+| `number` × 9 (`kick_level`, `kick_dwell_ms`, `min_brightness`, `max_brightness`, `ramp_rate`, `overtemp_limit`, `button_hold_off_ms`, `assert_ms`, `assert_interval_ms`) | last value set | `initial_value:` |
 | `switch` × 5 (the four engine gates plus `allow_overwrite_stock`) | last state | `restore_mode:` |
 
 Also in that same 16 KB, from stock ESPHome components in the example config:
@@ -670,7 +717,7 @@ Also in that same 16 KB, from stock ESPHome components in the example config:
 | `wifi` | SSID/PSK | only if set via captive portal or Improv — YAML credentials are compiled in, not stored |
 | `api` | noise encryption key | only if changed at runtime rather than in YAML |
 
-**Not** persisted: the light entity itself (the co-processor reports its own state at boot and the entity syncs to that), the temperature sensor, both text sensors, and the front button.
+**Not** persisted: the light entity itself (the co-processor reports its own state at boot and the entity syncs to that), the temperature sensor, both text sensors, and the button's pressed state. The button's *tuning* — hold-off and the assert knobs — does persist, as `number` entities in the table above.
 
 Three things wipe stored values: a **full-erase serial flash**, **reverting to stock via a full factory package** (Shelly's manifest erases `nvs`), and **a failed `nvs_open`** — if the partition is exhausted, ESPHome erases the whole partition to recover. That last one is why the boot log prints `NVS: <used>/<total> entries used`: on this device that space is shared with stock's leftovers. If free entries are in the single digits, clear it deliberately rather than waiting for the automatic wipe. Nothing that boots the device lives there.
 
