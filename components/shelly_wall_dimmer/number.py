@@ -42,8 +42,10 @@ TYPES = {
     # bounce is discarded. 0 accepts every latched edge.
     "button_hold_off_ms": (DimmerNumberType.BUTTON_HOLD_OFF_MS, 0, 1000, 10, 100),
     # How long a button-originated command is re-asserted for, and how often.
-    # assert_ms 0 disables the assert entirely. See dimmer_engine.h.
-    "assert_ms": (DimmerNumberType.ASSERT_MS, 0, 1000, 10, 50),
+    # assert_ms 0 disables the assert entirely. The default matches
+    # kick_dwell_ms so the burst covers the whole silent window -- KEEP THEM IN
+    # STEP if you raise the dwell. See dimmer_engine.h.
+    "assert_ms": (DimmerNumberType.ASSERT_MS, 0, 1000, 10, 150),
     "assert_interval_ms": (DimmerNumberType.ASSERT_INTERVAL_MS, 1, 100, 1, 5),
 }
 

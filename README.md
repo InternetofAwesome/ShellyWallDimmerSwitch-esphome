@@ -497,7 +497,7 @@ All are `platform: shelly_wall_dimmer` with a `type:`, and all are `config`-cate
 | `ramp_rate` | 1–1000 %/s | 150 | One shared speed for every ramp. Cannot be zero. |
 | `overtemp_limit` | 40–85 °C | 65 | Above this reported co-processor temperature, the output is switched off. See [Thermal cutout](#thermal-cutout). |
 | `button_hold_off_ms` | 0–1000 ms | 100 | Minimum gap between two accepted button presses, and the window in which release bounce is discarded. Raise it if one tap toggles twice; lower it if fast taps are swallowed. |
-| `assert_ms` | 0–1000 ms | 50 | How long a **button-originated** command is re-sent for. `0` disables. See [Setpoint assert](#setpoint-assert). |
+| `assert_ms` | 0–1000 ms | 150 | How long a **button-originated** command is re-sent for. Defaults to the same value as `kick_dwell_ms`, and should be kept **≥** it. `0` disables. See [Setpoint assert](#setpoint-assert). |
 | `assert_interval_ms` | 1–100 ms | 5 | How often it is re-sent during that window. |
 
 **Range mapping.** `min`/`max` don't clamp, they **stretch**. Home Assistant 0 % maps to `min`, 100 % maps to `max`, linear in between, and device reports map back so HA still reads 0–100 %. So `min=20, max=80` gives 0→20, 50→50, 100→80. The defaults (1/100) are effectively a no-op. `kick_level` is always in real device terms, not mapped.
@@ -591,7 +591,9 @@ Commands from Home Assistant are **never** asserted. Nothing is touching the pla
 
 The window ends early once a ramp starts, because a ramp already emits a byte every step — that *is* an assert, and replaying a stale byte alongside it would fight the ramp.
 
-**Tuning.** Both knobs are live entities, not compile-time constants, because how long a finger lingers is a property of the hardware in the wall. If a resting finger still steals the command, raise **Assert Duration** (50 → 150 → 250 ms). If the touch LED bar flickers during the burst, raise **Assert Interval**. Neither needs a reflash. Set `assert_ms` to 0 to switch the feature off entirely.
+**Keep `assert_ms` ≥ `kick_dwell_ms`.** They default to the same 150 ms for a reason: the dwell *is* the silent window the assert exists to cover. Raise the dwell without raising the assert and its tail goes unasserted again, reproducing the original failure — and it looks like the assert doesn't work, rather than like a mistuning. The firmware does not couple them automatically; they are two independent sliders.
+
+**Tuning.** Both knobs are live entities, not compile-time constants, because how long a finger lingers is a property of the hardware in the wall. Start from a value that works and tune **down** — erring long costs a few extra bytes on a link the co-processor already accepts at 20 Hz sustained, while erring short costs a bulb that doesn't light. If the touch LED bar flickers during the burst, raise **Assert Interval** to thin it out. Neither needs a reflash. Set `assert_ms` to 0 to switch the feature off entirely.
 
 ---
 
@@ -642,7 +644,7 @@ Each switch keeps its **own** stock image in its own spare slot, with its own **
 | Light toggles on release instead of on press | Flip `inverted:` on `button_pin:`. |
 | A quick tap does nothing | You are using `binary_sensor: platform: gpio` for the button instead of `button_pin:` — that platform samples the pin's level and drops sub-loop-length taps. See [The front button](#the-front-button). |
 | One tap toggles twice | Raise **Button Hold Off**. |
-| Pressing the lower touch plate turns on but the bulb doesn't strike | The touch position is overwriting the strike command. Raise **Assert Duration** (50 → 150 → 250 ms). See [Setpoint assert](#setpoint-assert). |
+| Pressing the lower touch plate turns on but the bulb doesn't strike | The touch position is overwriting the strike command. Check **Assert Duration** is at least as long as **Kick Dwell** — if you raised the dwell, the tail of it is unasserted. See [Setpoint assert](#setpoint-assert). |
 | The touch LED bar flickers on a button press | Raise **Assert Interval** so the burst is less dense. |
 | LEDs full-on when they should be off | LED polarity — the `inverted: true` on the `ledc` outputs. |
 | Low brightness does nothing / jumps oddly | `gamma_correct: 0` missing, or `kick_level` set below what your bulb can strike. |

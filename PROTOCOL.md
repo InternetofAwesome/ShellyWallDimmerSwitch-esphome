@@ -86,9 +86,9 @@ applies its touch level before the ESP32 hears anything. A kicked turn-on emits
 exactly one strike byte and then goes silent for the kick dwell, so the touch
 level simply overwrites it — press the lower plate to turn on and the bulb never
 strikes. This firmware answers by re-sending a button-originated command in a
-short burst (the "setpoint assert", ~50 ms at ~5 ms intervals, both tunable at
-runtime) so it wins the race a single byte loses. Home Assistant commands are
-not asserted; nothing is touching the plate then.
+burst (the "setpoint assert", defaulting to the full kick dwell at ~5 ms
+intervals, both tunable at runtime) so it wins the race a single byte loses.
+Home Assistant commands are not asserted; nothing is touching the plate then.
 
 ## Status LEDs
 Flex nets `wifi_led` / `pw_led` drive front status LEDs from ESP32 GPIOs:

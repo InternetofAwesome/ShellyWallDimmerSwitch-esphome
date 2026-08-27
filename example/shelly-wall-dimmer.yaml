@@ -239,11 +239,15 @@ number:
   # Raise the duration if a lingering finger still steals the command; raise the
   # interval if the touch LED bar flickers during the burst. Home Assistant
   # commands are never asserted -- nothing is touching the plate then.
+  #
+  # KEEP THIS >= "Kick Dwell" ABOVE. It defaults to the same 150 ms so the burst
+  # covers the whole silent window; raise the dwell without raising this and the
+  # tail of it goes unasserted, which is the exact failure this prevents.
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: assert_ms
     name: "Assert Duration"
-    initial_value: 50      # 0-1000 ms; 0 disables the assert
+    initial_value: 150     # 0-1000 ms; 0 disables the assert
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: assert_interval_ms

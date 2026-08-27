@@ -58,7 +58,15 @@ struct DimmerParams {
   // Only the button path arms this. Home Assistant commands go through plain
   // request() and are unchanged, because nothing is touching the plate then.
   // 0 disables.
-  uint32_t assert_ms = 50;
+  //
+  // The default MATCHES kick_dwell_ms, so out of the box the burst covers the
+  // whole silent window rather than a fraction of it. THE TWO ARE COUPLED: raise
+  // kick_dwell_ms and the tail of the dwell goes unasserted again, which is
+  // exactly the failure this exists to prevent. Erring long is the cheap
+  // direction -- the cost is a few extra bytes on a 115200 link that the
+  // co-processor already accepts at 20 Hz sustained, against a bulb that fails
+  // to strike. Tune DOWN from a working value, never up from a broken one.
+  uint32_t assert_ms = 150;
   uint32_t assert_interval_ms = 5;
 
   // ---- over-temperature cutout (belt and suspenders) ----------------------
