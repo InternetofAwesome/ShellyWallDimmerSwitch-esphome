@@ -40,11 +40,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      # NOTE: no release tag is published yet. Until one is, this line will
-      # fail to resolve -- deliberately. A hard fetch error is the right
-      # outcome for an unreleased project; silently installing the tip of
-      # master onto a mains device is not. See "Releases and stability".
-      ref: v1.0.0-alpha-01
+      ref: v1.0.0
     refresh: 1d
     components: [shelly_wall_dimmer, status_led_pwm]
 

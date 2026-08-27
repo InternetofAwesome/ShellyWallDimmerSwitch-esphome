@@ -20,9 +20,10 @@ Only the ESP32 is replaced. **The co-processor that actually switches mains keep
 
 **Control and entities**
 
-- Every knob is a **native HA entity** — five numbers, five switches — tunable live, no reflash.
+- Every knob is a **native HA entity** — nine numbers, five switches — tunable live, no reflash.
 - **All settings persist** across reboots and firmware updates.
-- **Front button** support, routed through the same kick/ramp engine, so a physical tap gets the kick too.
+- **Front button** support, routed through the same kick/ramp engine, so a physical tap gets the kick too. The press edge is latched in an interrupt, so even a very brief tap registers — ESPHome's stock GPIO binary sensor samples the pin level and drops them.
+- **Setpoint assert** — a button press is re-sent for a short window so the capacitive touch plate, which the co-processor applies before the ESP32 hears about it, can't overwrite the command.
 - **Dimmable status LEDs** — power LED as a locator (on when the light is off), Wi-Fi LED as an error indicator, both PWM with their own brightness sliders.
 - Local API only; **no cloud dependency**.
 
@@ -79,7 +80,7 @@ Only the ESP32 is replaced. **The co-processor that actually switches mains keep
 19. [What was done to de-risk this](#what-was-done-to-de-risk-this)
 20. [Testing](#testing)
 21. [Repo layout](#repo-layout)
-20. [License](#license)
+22. [License](#license)
 
 ---
 
@@ -206,7 +207,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0-alpha-01   # see Releases and stability for what -alpha means
+      ref: v1.0.0            # a release tag, not `master` -- see Releases and stability
     components: [shelly_wall_dimmer, status_led_pwm]
 
 # UART to the dimming co-processor. These pins are not negotiable.
@@ -284,7 +285,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/InternetofAwesome/ShellyWallDimmerSwitch-esphome
-      ref: v1.0.0-alpha-01   # see Releases and stability for what -alpha means
+      ref: v1.0.0            # a release tag, not `master` -- see Releases and stability
     refresh: 1d
     components: [shelly_wall_dimmer, status_led_pwm]
 
