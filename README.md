@@ -68,19 +68,20 @@ Only the ESP32 is replaced. **The co-processor that actually switches mains keep
 10. [Setpoint assert](#setpoint-assert)
 11. [Thermal cutout](#thermal-cutout)
 12. [Converting more switches](#converting-more-switches)
-13. [Troubleshooting](#troubleshooting)
+13. [Fleet best practices](#fleet-best-practices)
+14. [Troubleshooting](#troubleshooting)
 
 **Part 2 — how it works, and where to check my work**
 
-14. [Releases and stability](#releases-and-stability)
-15. [What persists](#what-persists)
-16. [Getting back to stock (untested)](#getting-back-to-stock-untested)
-17. [Developer and recovery buttons](#developer-and-recovery-buttons)
-18. [Use at your own risk](#use-at-your-own-risk)
-19. [What was done to de-risk this](#what-was-done-to-de-risk-this)
-20. [Testing](#testing)
-21. [Repo layout](#repo-layout)
-22. [License](#license)
+15. [Releases and stability](#releases-and-stability)
+16. [What persists](#what-persists)
+17. [Getting back to stock (untested)](#getting-back-to-stock-untested)
+18. [Developer and recovery buttons](#developer-and-recovery-buttons)
+19. [Use at your own risk](#use-at-your-own-risk)
+20. [What was done to de-risk this](#what-was-done-to-de-risk-this)
+21. [Testing](#testing)
+22. [Repo layout](#repo-layout)
+23. [License](#license)
 
 ---
 
@@ -89,6 +90,7 @@ Only the ESP32 is replaced. **The co-processor that actually switches mains keep
 ## What you need
 
 - A **Shelly Plus Wall Dimmer US** (`SNDM-0013US`), installed and working on stock firmware, on your LAN.
+- **Stock firmware 2.0.0 — the only version confirmed to work.** Both 1.3.3 and the firmware currently shipping on new units have been tested and fail the first flash. No other version has been tested (see [Known gaps](#known-gaps)). Check your version before starting; getting a device that isn't on 2.0.0 onto it is outside the scope of this project.
 - **Its IP address.** You point the installer at it directly.
 - Local access enabled on the device (it is, by default).
 - **ESPHome** — either the Builder add-on in Home Assistant (assumed below) or the CLI.
@@ -127,6 +129,8 @@ The dimmer has **two firmware slots**, one running and one fallback. If the runn
 ---
 
 ## First flash: getting this onto a stock dimmer
+
+0. **Confirm stock firmware is exactly 2.0.0** (Shelly app → device settings, or `Sys.GetStatus`/the web UI's firmware version). This is the only version the bridge has been confirmed to work on — both 1.3.3 and the firmware currently shipping on new units were tested and failed. See [Known gaps](#known-gaps).
 
 1. **Builder → `+ NEW DEVICE`**, name it, pick **ESP32**. Let the wizard finish, then **skip** the install it offers — you only wanted the generated keys.
 
@@ -635,7 +639,39 @@ Never carry across:
 | `name:` / `friendly_name:` | Duplicate names collide on mDNS, and the Builder can end up talking to whichever answers first. |
 | `bridge_package: push_to:` | Must be the **new** switch's IP. Left pointing at an already-converted one it just fails (that device no longer speaks Shelly's update protocol), so nothing gets flashed and it isn't obvious why. |
 
+**If you get this wrong anyway** — easy to do mid-batch, converting several switches back to back — here's what it actually looks like, not just why to avoid it. The bridge flash itself succeeds regardless (nothing in that path checks against your other devices), so the misconfigured switch comes up broadcasting *someone else's* name. Home Assistant then discovers it as a collision against the device whose identity you copied, offering to either migrate that device's history onto the new hardware or delete its config entirely — **don't pick either**, both corrupt the real device's registry entry. And once the bridge flash has happened, a routine `Install → Wireless` aimed at the *correct* config won't reach the misconfigured device either: the dashboard resolves its install target by the config's declared name, so it finds whatever device already legitimately owns that name and never touches the miswired one. The only way back is to force the target explicitly — `esphome upload <file> --device <its-actual-IP>` — instead of letting name resolution pick for you, then let Home Assistant rediscover it clean under its real name.
+
 Each switch keeps its **own** stock image in its own spare slot, with its own **Allow Overwrite Stock** switch, default off — converting one has no effect on another's rollback.
+
+---
+
+## Fleet best practices
+
+Everything below was learned running more than one of these switches. None of it matters for a single device — it starts mattering the moment you have two.
+
+**Audit your secrets before you trust the interlock.** The per-device `ota: password:` / `api: encryption: key:` split only protects you if every device actually got its own value. It's easy to end up with every device quietly pointing at the same `!secret` name instead — the YAML validates fine, the build succeeds, and nothing complains until a mis-aimed install actually reaches the wrong switch. Check directly rather than assume:
+```
+grep -h "key: !secret\|password: !secret" *.yaml | sort | uniq -c
+```
+Any secret name used by more than one device file has no interlock at all.
+
+**Target installs by IP, not by name, the moment two devices could plausibly answer to the same hostname.** The dashboard's `Install → Wireless` resolves its target by the config's declared name — if two devices are (even temporarily, mid-fix) broadcasting the same name, whichever answers first wins, silently. This isn't hypothetical: it's exactly how a fleet-wide credential rotation can end up flashing the wrong physical switch. Use `esphome upload <file> --device <ip>` any time you're not certain a name is currently unique across your fleet.
+
+**Get the name right before the device is ever added to Home Assistant — not after.** Home Assistant generates entity IDs once, from whatever the device was called *at that moment*, and they do not follow a later rename — even a correct one, even one the device itself now reports. Deleting the device from HA and re-adding it doesn't fix this either: HA's registries key by MAC/unique_id and revive the same entity IDs on reconnect. The only real fixes are a manual per-entity rename through the UI, or — last resort, with HA stopped first — a direct edit of `.storage/core.entity_registry`. Far cheaper to just get the name right on day one than to unwind it after.
+
+**Rotating `api: encryption: key:` is safe in a single OTA push. Rotating `ota: password:` is not.** The API key isn't checked during the OTA transfer itself, so changing it and pushing in the same build works fine. The OTA password *is* what authenticates that transfer — the uploader authenticates with whatever's in the config it's building from, which has to match what's already flashed. Change it and push in the same step and you lock yourself out (cleanly — the device stays on its current firmware untouched, you just can't get back in with the new value to try again). To actually rotate it, stage the new password via an `on_boot:` override first:
+```yaml
+esphome:
+  on_boot:
+    - lambda: 'id(my_ota).set_auth_password("NEW_PASSWORD");'
+ota:
+  - platform: esphome
+    id: my_ota
+    password: "OLD_PASSWORD"   # still needed to auth THIS upload
+```
+then push a second, clean build with `password: "NEW_PASSWORD"` and the `on_boot:` override removed.
+
+**Converting a device from stock doesn't retire its old entities — it orphans them.** Home Assistant's native Shelly integration entities (its light, restart button, firmware-update entity) stay in the registry after the bridge flash, silently pointing at a device that no longer speaks that protocol. Nothing errors; automations and dashboards referencing them just quietly stop doing anything. Grep `automations.yaml` (and check your dashboards) for the *old* entity IDs as a checklist item during conversion, not as a bug report to chase down weeks later.
 
 ---
 
@@ -644,6 +680,7 @@ Each switch keeps its **own** stock image in its own spare slot, with its own **
 | Symptom | Likely cause |
 |---|---|
 | Bridge push runs but the device never updates | The version didn't change. Stock skips an update matching its running version — bump `fw_version`. |
+| Bridge push fails or the device stays on stock no matter what | The bridge is only confirmed working on stock **2.0.0**. Both 1.3.3 and the firmware currently shipping on new units have been tested and fail — check your version. |
 | `bridge_package` seems to do nothing, no errors | Missing `toolchain: platformio`. The component now catches this at config time. |
 | Build refuses with "must not run as part of an upload job" | You used Install → Wireless with `bridge_package` configured. Use **Manual download**. |
 | Wireless update refused with `OTA REFUSED` | Working as designed — see [Updating after the first flash](#updating-after-the-first-flash). |
@@ -829,6 +866,7 @@ Stated plainly, because a de-risking section that lists only successes isn't one
 - **Power loss during a boot-record write** is mitigated by design (single-copy writes, the other copy always valid) but has not been empirically tested.
 - **Restoring stock after the fallback slot is overwritten is untested** — see [Getting back to stock](#getting-back-to-stock-untested).
 - **One hardware variant.** US SKU, one board revision, four units — and that field time belongs to the builds that were actually installed, not automatically to the current release. See [Releases and stability](#releases-and-stability).
+- **Only stock 2.0.0 is confirmed to work.** Both 1.3.3 and the firmware currently shipping on new units were tested and the first flash failed on each. No other version has been tried.
 - **Only temperature is acted on.** It drives the [thermal cutout](#thermal-cutout). The second status bit remains undecoded and unused, and the richer conditions stock's shared code names (no-load, non-dimmable, over-current) are simply not present in this device's 3-byte status reply, so they cannot be detected at all.
 - **A dead co-processor link is reported, not acted on.** There is no reset line to the co-processor, so there is no action available: if it stops responding we cannot command it or restart it.
 - **The thermal limit is provisional.** It is set low (65 °C) on purpose, but it has not been validated against a real thermal sweep, and the only load data so far is a single point at 24 % — well away from the ~50 % worst case. See [Thermal cutout](#thermal-cutout).
