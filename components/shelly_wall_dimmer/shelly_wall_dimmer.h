@@ -214,8 +214,20 @@ class ShellyWallDimmer : public Component, public uart::UARTDevice {
   // Single outbound choke point. In silent/bench mode every ESP-originated byte
   // (poll, engine command, raw diagnostic) is dropped here so the ESP never
   // drives the link; an external adapter owns it. RX is unaffected.
+  //
+  // TEMP DIAGNOSTIC (100%-flicker investigation): log every byte actually put
+  // on the wire, decoded, with a millisecond timestamp, so a wire trace can be
+  // lined up against the flicker and compared to the RX trace in
+  // handle_status_frame_(). Remove once the root cause is found.
   void tx_byte_(uint8_t b) {
     if (this->silent_) return;
+    if (b == ::shelly_dimmer_core::CMD_POLL) {
+      ESP_LOGD("shelly_wall_dimmer", "TX 0x%02X POLL t=%lu", b, (unsigned long) millis());
+    } else {
+      bool on = (b & 0x80) != 0;
+      uint8_t bri = b & 0x7F;
+      ESP_LOGD("shelly_wall_dimmer", "TX 0x%02X on=%d bri=%u t=%lu", b, on, bri, (unsigned long) millis());
+    }
     this->write_byte(b);
   }
   static void stray_byte_trampoline_(uint8_t b, void *ctx) {
@@ -335,6 +347,10 @@ class DimmerTransitionTransformer : public light::LightTransformer {
   void start() override {
     bool on = this->target_values_.is_on();
     auto brightness_pct = static_cast<uint8_t>(this->target_values_.get_brightness() * 100.0f + 0.5f);
+    // TEMP DIAGNOSTIC (100%-flicker investigation): remove once the root
+    // cause is found -- see tx_byte_() and handle_status_frame_().
+    ESP_LOGD("shelly_wall_dimmer", "transition start: on=%d brightness_pct=%u length_ms=%u t=%lu",
+             on, brightness_pct, (unsigned) this->length_, (unsigned long) millis());
     this->parent_->request_transition(on, brightness_pct, this->length_);
   }
 

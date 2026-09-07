@@ -146,6 +146,12 @@ void ShellyWallDimmer::maybe_autocommit_() {
 }
 
 void ShellyWallDimmer::handle_status_frame_(const ::shelly_dimmer_core::StatusFrame &frame) {
+  // TEMP DIAGNOSTIC (100%-flicker investigation): log every parsed status
+  // frame unconditionally (not deduped) so it can be lined up against the TX
+  // trace in tx_byte_(). Remove once the root cause is found.
+  ESP_LOGD(TAG, "RX bri=%u on=%d flag=%d temp=%u busy=%d t=%lu", frame.brightness, frame.output_on,
+           frame.flag_bit1, frame.temp_c, this->engine_.busy(), (unsigned long) millis());
+
   // Over-temperature FIRST, before reconciling state: above the configured
   // limit the engine commands the output off and refuses to let anything turn
   // it back on, and notify_status() below depends on that flag already being
