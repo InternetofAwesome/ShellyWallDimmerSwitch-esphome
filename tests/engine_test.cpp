@@ -324,7 +324,7 @@ static void test_ramp() {
     Rig r;
     r.p().kick_enabled = false;
     r.p().ramp_on_change = true;
-    r.p().ramp_rate = 100;  // 1%/10ms
+    r.p().ramp_rate = 100;  // 1%/9ms
     r.req(true, 50);        // jump on to 50 (ramp_on_off off)
     r.advance(5);
     r.clear();
@@ -400,7 +400,7 @@ static void test_off() {
 }
 
 // ---- HA "transition: Ns" (request_transition) ------------------------------
-// Tolerance for elapsed-time checks: the ramp is quantized to a 10ms floor and
+// Tolerance for elapsed-time checks: the ramp is quantized to a 9ms floor and
 // an integer step count, so total time is never exact -- just close. 25% (with
 // a floor) comfortably covers that rounding without being a tautology.
 static bool within(uint32_t actual, uint32_t expected) {

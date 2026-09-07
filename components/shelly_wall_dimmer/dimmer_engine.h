@@ -112,11 +112,17 @@ struct DimmerParams {
 // never weaker, and cannot switch it off at all.
 static constexpr uint8_t OVERTEMP_LIMIT_MAX_C = 85;
 
-// Ramp-cadence quantization (see DimmerParams::ramp_rate). The 10 ms floor is far
-// above the 1 ms RTOS tick (CONFIG_FREERTOS_HZ=1000) so it is always resolvable,
-// and just above the 60 Hz mains half-cycle so it is the finest step that changes
-// anything on the load.
-static constexpr uint32_t RAMP_MIN_PERIOD_MS = 10;
+// Ramp-cadence quantization (see DimmerParams::ramp_rate). A 60 Hz mains
+// half-cycle is 1000/120 = 8.33 ms -- the TRIAC can act once per half-cycle
+// and no finer, so 9 ms (ceil(8.33)) is the tightest whole-millisecond floor
+// that never asks for a faster update than the hardware can actually apply.
+// The previous 10 ms floor had ~1.67 ms of unnecessary slack per half-cycle;
+// tightened here while chasing a flicker at full brightness, on the theory
+// that the loose floor let our step cadence drift out of phase with whatever
+// cadence the co-processor's own zero-cross-referenced firing runs on. Also
+// far above the 1 ms RTOS tick (CONFIG_FREERTOS_HZ=1000), so still always
+// resolvable.
+static constexpr uint32_t RAMP_MIN_PERIOD_MS = 9;
 static constexpr uint16_t RAMP_RATE_MIN = 1;      // %/s -- never zero
 static constexpr uint16_t RAMP_RATE_MAX = 1000;   // %/s -- 0->100 in 100 ms
 
@@ -442,10 +448,9 @@ class DimmerEngine {
   }
 
   // Convert a rate (%/s) into a fixed (step, interval) cadence, quantized to
-  // RAMP_MIN_PERIOD_MS. No dithering: one step size and one interval per ramp;
-  // the only imprecision is integer-ms rounding of the interval (<= half a
-  // period). For R <= 100 %/s a 1% step is slower than the floor, so we stretch
-  // the interval; above that we widen the step and keep interval >= the floor.
+  // RAMP_MIN_PERIOD_MS. No dithering: one step size and one interval per ramp.
+  // For R <= ~111 %/s a 1% step is slower than the floor, so we stretch the
+  // interval; above that we widen the step and keep interval >= the floor.
   // Takes the rate explicitly (rather than always reading p_.ramp_rate) so the
   // same math serves both the configured ramp_rate and a one-shot rate derived
   // from an explicit transition duration (see start_ramp_to()).
@@ -455,7 +460,15 @@ class DimmerEngine {
     if (R > RAMP_RATE_MAX) R = RAMP_RATE_MAX;
     if (1000u / R >= RAMP_MIN_PERIOD_MS) {
       step = 1;
-      interval_ms = (1000u + R / 2) / R;  // round(1000 / R)
+      // Snap to the nearest whole mains half-cycle (a multiple of
+      // RAMP_MIN_PERIOD_MS) rather than the nearest raw millisecond, so a
+      // single-step ramp's cadence stays on the same 8.33 ms grid the widened
+      // "else" branch below already lands on for faster rates. Plain
+      // round(1000/R) previously let the interval fall anywhere in between
+      // (e.g. 10 ms at R=100 %/s -- 1.2 half-cycles, not a whole number).
+      uint32_t periods = (1000u + (R * RAMP_MIN_PERIOD_MS) / 2) / (R * RAMP_MIN_PERIOD_MS);
+      if (periods < 1) periods = 1;
+      interval_ms = periods * RAMP_MIN_PERIOD_MS;
     } else {
       uint32_t s = (R * RAMP_MIN_PERIOD_MS + 999) / 1000;  // ceil(R * Tq / 1000)
       step = uint8_t(s < 1 ? 1 : s);

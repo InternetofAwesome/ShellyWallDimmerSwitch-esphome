@@ -552,7 +552,7 @@ Both LEDs are **active-low** (bench-confirmed), which is why the `output:` block
 
 With kick off, a turn-on jumps straight to target, or fades up from 0 if `ramp_on_off` is on.
 
-**Ramps.** `ramp_rate` is in percent per second. The firmware converts it to a fixed step cadence, quantized to a 10 ms floor — about one mains half-cycle, since the TRIAC can only act once per half-cycle (8.33 ms at 60 Hz) and finer steps buy nothing. There is no dithering: one step size, one interval, and a partial final step lands exactly on the setpoint.
+**Ramps.** `ramp_rate` is in percent per second. The firmware converts it to a fixed step cadence, quantized to a 9 ms floor — one 60 Hz mains half-cycle (8.33 ms) rounded up to the nearest millisecond, since the TRIAC can only act once per half-cycle and finer steps buy nothing. There is no dithering: one step size, one interval (snapped to a whole multiple of that floor), and a partial final step lands exactly on the setpoint.
 
 **Transitions.** `light.turn_on ... transition: Ns` ramps over exactly that duration using our engine rather than ESPHome's, so the two don't fight. It composes with the kick: the strike stays instant, and the requested duration covers the ramp after it.
 
