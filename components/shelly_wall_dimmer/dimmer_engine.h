@@ -25,10 +25,15 @@ struct DimmerParams {
   // scale is stretched across (NOT a clamp): a command of 0 maps to
   // min_brightness and 100 maps to max_brightness, linearly. e.g. min=20,max=80:
   // HA 0% -> 20% real, HA 100% -> 80% real. The inverse is applied to device
-  // reports so HA still shows 0-100. Defaults 1/100 == near-identity (feature
-  // effectively off until you narrow the window). See map_to_device/map_to_ha.
+  // reports so HA still shows 0-100. See map_to_device/map_to_ha.
   uint8_t min_brightness = 1;
-  uint8_t max_brightness = 100;
+  // Default max is 94, not 100: bench-confirmed flicker on the 94->95 device-
+  // level transition (byte-level trace was clean on both TX and RX -- this is
+  // the co-processor's own dimming curve doing something at that exact step,
+  // not a rounding or ramp-cadence issue in this firmware). Capping the
+  // default here keeps the out-of-box range clear of it; raise it back to 100
+  // if your unit doesn't reproduce the glitch.
+  uint8_t max_brightness = 94;
   // A single ramp RATE in percent/second, shared by every ramp below. The engine
   // converts it to a fixed (step, interval) cadence at ramp start, quantized to a
   // RAMP_MIN_PERIOD_MS floor (~one mains half-cycle: the TRIAC acts once per

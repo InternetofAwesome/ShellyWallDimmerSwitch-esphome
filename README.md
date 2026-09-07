@@ -494,16 +494,22 @@ All are `platform: shelly_wall_dimmer` with a `type:`, and all are `config`-cate
 | `kick_level` | 0–100 % | 20 | Strike level **and** pivot: every turn-on snaps here first. Set it to the lowest percentage your bulb reliably lights at. |
 | `kick_dwell_ms` | 0–2000 ms | 150 | How long to hold at `kick_level` before ramping down — only when the target is *below* it. |
 | `min_brightness` | 0–100 % | 1 | Low end of the mapped window. |
-| `max_brightness` | 0–100 % | 100 | High end of the mapped window. |
+| `max_brightness` | 0–100 % | 94 | High end of the mapped window. Defaults below 100 — see [Known issue: flicker near full brightness](#known-issue-flicker-near-full-brightness). |
 | `ramp_rate` | 1–1000 %/s | 150 | One shared speed for every ramp. Cannot be zero. |
 | `overtemp_limit` | 40–85 °C | 65 | Above this reported co-processor temperature, the output is switched off. See [Thermal cutout](#thermal-cutout). |
 | `button_hold_off_ms` | 0–1000 ms | 100 | Minimum gap between two accepted button presses, and the window in which release bounce is discarded. Raise it if one tap toggles twice; lower it if fast taps are swallowed. |
 | `assert_ms` | 0–1000 ms | 150 | How long a **button-originated** command is re-sent for. Defaults to the same value as `kick_dwell_ms`, and should be kept **≥** it. `0` disables. See [Setpoint assert](#setpoint-assert). |
 | `assert_interval_ms` | 1–100 ms | 5 | How often it is re-sent during that window. |
 
-**Range mapping.** `min`/`max` don't clamp, they **stretch**. Home Assistant 0 % maps to `min`, 100 % maps to `max`, linear in between, and device reports map back so HA still reads 0–100 %. So `min=20, max=80` gives 0→20, 50→50, 100→80. The defaults (1/100) are effectively a no-op. `kick_level` is always in real device terms, not mapped.
+**Range mapping.** `min`/`max` don't clamp, they **stretch**. Home Assistant 0 % maps to `min`, 100 % maps to `max`, linear in between, and device reports map back so HA still reads 0–100 %. So `min=20, max=80` gives 0→20, 50→50, 100→80. The default (1/94, see below) is close to a no-op. `kick_level` is always in real device terms, not mapped.
 
 > ⚠️ **Physical touch dimming is not mapped.** The stretch applies to *commands* — Home Assistant, automations, the front button. The touch strip talks straight to the co-processor and only reports back afterwards, on the raw 0–100 scale, so it can go below `min`. `limit_correct` pulls it back, but only after the fact.
+
+#### Known issue: flicker near full brightness
+
+Bench testing found a repeatable flicker crossing one specific device-level step, 94→95, in both directions (dimming up into it and down out of it). The wire trace was checked byte-by-byte on both TX and RX at the moment it happens: the command sent is a single, correctly-encoded byte, and the co-processor's own status echo matches it exactly — no dropped byte, no duplicate, no rounding error anywhere in this firmware's range-mapping or ramp-cadence math. That points to the co-processor's own (stock, unmodified) dimming curve doing something at that particular firing angle, which is outside what an ESP32-side firmware replacement can see or control.
+
+`max_brightness` defaults to **94** rather than 100 specifically to keep the out-of-box range clear of it. If your unit doesn't reproduce the glitch, or you've confirmed a different transition point on your own hardware, raise or retune it freely — it's a live HA entity, no reflash needed.
 
 ### Switch options
 
@@ -651,6 +657,7 @@ Each switch keeps its **own** stock image in its own spare slot, with its own **
 | Low brightness does nothing / jumps oddly | `gamma_correct: 0` missing, or `kick_level` set below what your bulb can strike. |
 | Ramps stutter or fight themselves | `default_transition_length: 0s` missing. |
 | HA logs `Invalid encryption key` right after conversion | Expected for a reboot or two while the device comes up on new firmware. Clears itself; if it persists, the key really is mismatched. |
+| Flicker near full brightness | Known co-processor curve issue, not this firmware. See [Known issue: flicker near full brightness](#known-issue-flicker-near-full-brightness). `max_brightness` already defaults below it. |
 
 ---
 
@@ -827,6 +834,7 @@ Stated plainly, because a de-risking section that lists only successes isn't one
 - **The thermal limit is provisional.** It is set low (65 °C) on purpose, but it has not been validated against a real thermal sweep, and the only load data so far is a single point at 24 % — well away from the ~50 % worst case. See [Thermal cutout](#thermal-cutout).
 - **The ESPHome integration layer has no automated coverage.** What is tested is the engine, the frame parser, the boot records and the packaging. The glue binding them to Home Assistant entities is covered by bring-up and daily field use, not by tests.
 - **A committed slot with a broken image does not self-recover.** Committing is what makes an image permanent, and the bootloader will loop on it forever rather than fall back. This firmware only auto-commits after an image has run healthily for 30 s, which is what keeps that safe.
+- **A flicker crossing one specific brightness step (94→95) traces to the co-processor's own dimming curve, not this firmware.** See [Known issue: flicker near full brightness](#known-issue-flicker-near-full-brightness). `max_brightness` defaults below it, but the underlying co-processor behavior is unexplained and unfixable from the ESP32 side.
 
 <a name="footnote-a"></a>
 <sup>**a**</sup> Needs QEMU plus stock firmware images, which this repo does not redistribute. `make stock-fw` fetches them from Shelly's CDN and verifies them against content hashes. These targets skip cleanly without them.

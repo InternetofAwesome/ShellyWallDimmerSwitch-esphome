@@ -193,11 +193,14 @@ number:
     type: min_brightness
     name: "Min Brightness"
     initial_value: 1       # 0-100 %
+  # Default 94, not 100: bench-confirmed flicker crossing the 94->95 device
+  # level, isolated to the co-processor's own dimming curve. Raise to 100 if
+  # your unit doesn't reproduce it.
   - platform: shelly_wall_dimmer
     shelly_wall_dimmer_id: dimmer_coprocessor
     type: max_brightness
     name: "Max Brightness"
-    initial_value: 100     # 0-100 %
+    initial_value: 94      # 0-100 %
   # Single shared ramp rate in %/second, used by every ramp (on-change, on/off
   # fade, and limit correction). The firmware quantizes it to a step cadence.
   - platform: shelly_wall_dimmer

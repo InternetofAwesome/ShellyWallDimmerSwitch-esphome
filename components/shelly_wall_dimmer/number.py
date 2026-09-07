@@ -26,7 +26,10 @@ TYPES = {
     "kick_level": (DimmerNumberType.KICK_LEVEL, 0, 100, 1, 20),
     "kick_dwell_ms": (DimmerNumberType.KICK_DWELL_MS, 0, 2000, 10, 150),
     "min_brightness": (DimmerNumberType.MIN_BRIGHTNESS, 0, 100, 1, 1),
-    "max_brightness": (DimmerNumberType.MAX_BRIGHTNESS, 0, 100, 1, 100),
+    # Default capped at 94, not 100: bench-confirmed flicker on the 94->95
+    # device-level transition, isolated to the co-processor's own dimming
+    # curve (see dimmer_engine.h). Raise to 100 if your unit doesn't show it.
+    "max_brightness": (DimmerNumberType.MAX_BRIGHTNESS, 0, 100, 1, 94),
     "ramp_rate": (DimmerNumberType.RAMP_RATE, 1, 1000, 1, 150),
     # Over-temperature cutout. Above this, the output is switched off and
     # held off. Default errs LOW because it is provisional; the firmware
